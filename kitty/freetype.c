@@ -78,11 +78,19 @@ freetype_library(void) { return library; }
 
 static int
 font_units_to_pixels_y(Face *self, int x) {
+    // this is a fixed-size font
+    if (self->face->available_sizes) {
+        return x;
+    }
     return (int)ceil((double)FT_MulFix(x, self->face->size->metrics.y_scale) / 64.0);
 }
 
 static int
 font_units_to_pixels_x(Face *self, int x) {
+    // this is a fixed-size font
+    if (self->face->available_sizes) {
+        return x;
+    }
     return (int)ceil((double)FT_MulFix(x, self->face->size->metrics.x_scale) / 64.0);
 }
 
@@ -184,6 +192,9 @@ set_size_for_face(PyObject *s, unsigned int desired_height, bool force, FONTS_DA
     return set_font_size(self, w, w, xdpi, ydpi, desired_height, fg->cell_height);
 }
 
+bool
+freetype_convert_mono_bitmap(FT_Bitmap *src, FT_Bitmap *dest);
+
 static bool
 init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_HANDLE fg) {
 #define CPY(n) self->n = self->face->n;
@@ -201,6 +212,84 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
     if (os2 != NULL) {
       self->strikethrough_position = os2->yStrikeoutPosition;
       self->strikethrough_thickness = os2->yStrikeoutSize;
+    }
+    if (self->face->available_sizes) {
+        self->height = self->face->available_sizes->height;
+        self->max_advance_height = self->face->available_sizes->height;
+        self->max_advance_width = self->face->available_sizes->width;
+        self->char_width = self->face->available_sizes->width;
+
+        int glyph_index = FT_Get_Char_Index(self->face, 'x');
+        if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+            FT_GlyphSlotRec *glyph = self->face->glyph;
+            FT_Bitmap* bitmap = &glyph->bitmap;
+            int descender = 0;
+            FT_Bitmap dest;
+            bool is_mono = self->face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO;
+            if (is_mono) {
+                freetype_convert_mono_bitmap(bitmap, &dest);
+                bitmap = &dest;
+            }
+            int stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
+
+            // Calculate descender
+            for (int row = bitmap->rows - 1; row >= 0; row--) {
+                for (int col = 0; col < (int)bitmap->width; col++) {
+                    if (bitmap->buffer[row * stride + col] != 0) {
+                        descender = bitmap->rows - 1 - row;
+                        break;
+                    }
+                }
+                if (descender != 0) {
+                    break;
+                }
+            }
+            self->ascender = bitmap->rows - descender;
+            self->descender = descender;
+        }
+
+        self->underline_position = -2;
+
+        glyph_index = FT_Get_Char_Index(self->face, '-');
+        if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+            FT_GlyphSlotRec *glyph = self->face->glyph;
+            FT_Bitmap* bitmap = &glyph->bitmap;
+            int strikethrough_bottom = 0;
+            int strikethrough_top = 0;
+            FT_Bitmap dest;
+            bool is_mono = self->face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO;
+            if (is_mono) {
+                freetype_convert_mono_bitmap(bitmap, &dest);
+                bitmap = &dest;
+            }
+            int stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
+
+            // Calculate strikethrough
+            for (int row = 0; row < (int)bitmap->rows; row++) {
+                for (int col = 0; col < (int)bitmap->width; col++) {
+                    if (bitmap->buffer[row * bitmap->pitch + col] != 0) {
+                        strikethrough_top = row;
+                        break;
+                    }
+                }
+                if (strikethrough_top != 0) {
+                    break;
+                }
+            }
+            for (int row = bitmap->rows - 1; row >= 0; row--) {
+                for (int col = 0; col < (int)bitmap->width; col++) {
+                    if (bitmap->buffer[row * stride + col] != 0) {
+                        strikethrough_bottom = bitmap->rows - 1 - row;
+                        break;
+                    }
+                }
+                if (strikethrough_bottom != 0) {
+                    break;
+                }
+            }
+            self->strikethrough_position = strikethrough_top;
+            self->strikethrough_thickness = strikethrough_bottom - strikethrough_top;
+        }
     }
 
     self->path = path;

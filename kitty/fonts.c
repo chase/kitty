@@ -541,7 +541,7 @@ START_ALLOW_CASE_RANGE
         case 0x2500 ... 0x2573:
         case 0x2574 ... 0x259f:
         case 0x2800 ... 0x28ff:
-        case 0xe0b0 ... 0xe0bf:  // powerline box drawing
+        // case 0xe0b0 ... 0xe0bf:  // powerline box drawing
         case 0x1fb00 ... 0x1fb8b:  // symbols for legacy computing
         case 0x1fba0 ... 0x1fbae:
         case 0x1fb90:  // inverse medium shade

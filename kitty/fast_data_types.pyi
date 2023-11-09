@@ -393,7 +393,7 @@ class FontConfigPattern(TypedDict):
 
 def fc_list(
     spacing: int = -1,
-    allow_bitmapped_fonts: bool = False
+    allow_bitmapped_fonts: bool = True
 ) -> Tuple[FontConfigPattern, ...]:
     pass
 
@@ -403,7 +403,7 @@ def fc_match(
     bold: bool = False,
     italic: bool = False,
     spacing: int = FC_MONO,
-    allow_bitmapped_fonts: bool = False,
+    allow_bitmapped_fonts: bool = True,
     size_in_pts: float = 0.,
     dpi: float = 0.
 ) -> FontConfigPattern:
