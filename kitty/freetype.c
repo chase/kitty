@@ -78,11 +78,19 @@ freetype_library(void) { return library; }
 
 static int
 font_units_to_pixels_y(Face *self, int x) {
+    // this is a fixed-size font
+    if (self->face->available_sizes) {
+        return x;
+    }
     return (int)ceil((double)FT_MulFix(x, self->face->size->metrics.y_scale) / 64.0);
 }
 
 static int
 font_units_to_pixels_x(Face *self, int x) {
+    // this is a fixed-size font
+    if (self->face->available_sizes) {
+        return x;
+    }
     return (int)ceil((double)FT_MulFix(x, self->face->size->metrics.x_scale) / 64.0);
 }
 
@@ -193,6 +201,70 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
     self->has_color = FT_HAS_COLOR(self->face);
     self->hinting = hinting; self->hintstyle = hintstyle;
     if (!set_size_for_face((PyObject*)self, 0, false, fg)) return false;
+    if (self->face->available_sizes) {
+        self->height = self->face->available_sizes->height;
+        self->max_advance_height = self->face->available_sizes->height;
+        self->max_advance_width = self->face->available_sizes->width;
+        self->char_width = self->face->available_sizes->width;
+
+        int glyph_index = FT_Get_Char_Index(self->face, 'x');
+        if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+            FT_GlyphSlotRec *glyph = self->face->glyph;
+            FT_Bitmap* bitmap = &glyph->bitmap;
+            int ascender = 0;
+            int descender = 0;
+            int stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
+            // Calculate ascender
+            for (int row = 0; row < (int)bitmap->rows; row++) {
+                for (int col = 0; col < (int)bitmap->width; col++) {
+                    if (bitmap->buffer[row * stride + col] != 0) {
+                        ascender = row;
+                        break;
+                    }
+                }
+                if (ascender != 0) {
+                    break;
+                }
+            }
+
+            // Calculate descender
+            for (int row = bitmap->rows - 1; row >= 0; row--) {
+                for (int col = 0; col < (int)bitmap->width; col++) {
+                    if (bitmap->buffer[row * stride + col] != 0) {
+                        descender = bitmap->rows - 1 - row;
+                        break;
+                    }
+                }
+                if (descender != 0) {
+                    break;
+                }
+            }
+            self->ascender = ascender;
+            self->descender = descender;
+        }
+
+        // Calculate underline position as two pixels below `_`
+        glyph_index = FT_Get_Char_Index(self->face, '_');
+        if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+            FT_GlyphSlotRec *glyph = self->face->glyph;
+            FT_Bitmap* bitmap = &glyph->bitmap;
+            int underline_position = 0;
+            int stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
+
+            for (int row = bitmap->rows - 1; row >= 0; row--) {
+                for (int col = 0; col < (int)bitmap->width; col++) {
+                    if (bitmap->buffer[row * stride + col] != 0) {
+                        underline_position = bitmap->rows - 1 - row;
+                        break;
+                    }
+                }
+                if (underline_position != 0) {
+                    break;
+                }
+            }
+            self->underline_position = underline_position - 2;
+        }
+    }
     self->harfbuzz_font = hb_ft_font_create(self->face, NULL);
     if (self->harfbuzz_font == NULL) { PyErr_NoMemory(); return false; }
     hb_ft_font_set_load_flags(self->harfbuzz_font, get_load_flags(self->hinting, self->hintstyle, FT_LOAD_DEFAULT));
