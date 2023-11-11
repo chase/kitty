@@ -213,7 +213,7 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
       self->strikethrough_position = os2->yStrikeoutPosition;
       self->strikethrough_thickness = os2->yStrikeoutSize;
     }
-    if (self->face->available_sizes) {
+    if (!self->height && self->face->available_sizes) {
         self->height = self->face->available_sizes->height;
         self->max_advance_height = self->face->available_sizes->height;
         self->max_advance_width = self->face->available_sizes->width;
@@ -246,6 +246,9 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
             }
             self->ascender = bitmap->rows - descender;
             self->descender = descender;
+            printf("face=%s ascender=%d descender=%d\n", self->face->family_name, self->ascender, self->descender);
+        } else {
+            printf("COULD NOT LOAD GLYPH\n");
         }
 
         self->underline_position = -2;
@@ -288,7 +291,8 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
                 }
             }
             self->strikethrough_position = strikethrough_top;
-            self->strikethrough_thickness = strikethrough_bottom - strikethrough_top;
+            self->strikethrough_thickness = strikethrough_bottom - strikethrough_top + 1;
+            printf("face=%s st_pos=%d st_thick=%d\n", self->face->family_name, self->strikethrough_position, self->strikethrough_thickness);
         }
     }
 
