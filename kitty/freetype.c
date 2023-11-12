@@ -220,7 +220,7 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
         self->char_width = self->face->available_sizes->width;
 
         int glyph_index = FT_Get_Char_Index(self->face, 'x');
-        if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+        if (load_glyph(self, glyph_index, FT_LOAD_MONOCHROME)) {
             FT_GlyphSlotRec *glyph = self->face->glyph;
             FT_Bitmap* bitmap = &glyph->bitmap;
             int descender = 0;
@@ -246,15 +246,15 @@ init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_
             }
             self->ascender = bitmap->rows - descender;
             self->descender = descender;
-            printf("face=%s ascender=%d descender=%d\n", self->face->family_name, self->ascender, self->descender);
+            self->underline_position = -self->descender;
+            self->underline_thickness = 1;
+            printf("face=%s ascender=%d descender=%d underline_position=%d underline_thickness=%d\n", self->face->family_name, self->ascender, self->descender, self->underline_position, self->underline_thickness);
         } else {
             printf("COULD NOT LOAD GLYPH\n");
         }
 
-        self->underline_position = -2;
-
         glyph_index = FT_Get_Char_Index(self->face, '-');
-        if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+        if (load_glyph(self, glyph_index, FT_LOAD_MONOCHROME)) {
             FT_GlyphSlotRec *glyph = self->face->glyph;
             FT_Bitmap* bitmap = &glyph->bitmap;
             int strikethrough_bottom = 0;
