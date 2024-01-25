@@ -2216,9 +2216,12 @@ shell_prompt_marking(Screen *self, PyObject *data) {
                 }
                 if (PyErr_Occurred()) PyErr_Print();
                 self->linebuf->line_attrs[self->cursor->y].prompt_kind = pk;
+                if (pk == PROMPT_START)
+                    CALLBACK("cmd_output_marking", "O", Py_False);
             } break;
             case 'C':
                 self->linebuf->line_attrs[self->cursor->y].prompt_kind = OUTPUT_START;
+                CALLBACK("cmd_output_marking", "O", Py_True);
                 break;
         }
     }
@@ -4516,6 +4519,7 @@ line_edge_colors(Screen *self, PyObject *a UNUSED) {
 }
 
 WRAP0(update_only_line_graphics_data)
+WRAP0(bell)
 
 
 #define MND(name, args) {#name, (PyCFunction)name, args, #name},
@@ -4606,6 +4610,7 @@ static PyMethodDef methods[] = {
     MND(marked_cells, METH_NOARGS)
     MND(scroll_to_next_mark, METH_VARARGS)
     MND(update_only_line_graphics_data, METH_NOARGS)
+    MND(bell, METH_NOARGS)
     {"select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
 
     {NULL}  /* Sentinel */

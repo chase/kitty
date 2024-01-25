@@ -240,7 +240,7 @@ find_substitute_face(CFStringRef str, CTFontRef old_font, CPUCell *cpu_cell) {
                 new_font = manually_search_fallback_fonts(old_font, cpu_cell);
                 if (new_font) return new_font;
             }
-            PyErr_SetString(PyExc_ValueError, "Failed to find fallback CTFont other than the LastResort font");
+            PyErr_Format(PyExc_ValueError, "Failed to find fallback CTFont other than the LastResort font for: %s", [(NSString *)str UTF8String]);
             return NULL;
         }
         return new_font;
@@ -270,7 +270,22 @@ create_fallback_face(PyObject *base_face, CPUCell* cell, bool UNUSED bold, bool 
     }
     else { search_for_fallback(); }
     if (new_font == NULL) return NULL;
-    return (PyObject*)ct_face(new_font, fg);
+    NSURL *url = (NSURL*)CTFontCopyAttribute(new_font, kCTFontURLAttribute);
+    const char *font_path = [[url path] UTF8String];
+    ssize_t idx = -1;
+    PyObject *q, *ans = NULL;
+    while ((q = iter_fallback_faces(fg, &idx))) {
+        CTFace *qf = (CTFace*)q;
+        const char *qpath;
+        if (qf->path && (qpath = PyUnicode_AsUTF8(qf->path)) && strcmp(qpath, font_path) == 0) {
+            ans = PyLong_FromSsize_t(idx);
+            break;
+        }
+    }
+    [url release];
+    if (ans == NULL) return (PyObject*)ct_face(new_font, fg);
+    CFRelease(new_font);
+    return ans;
 }
 
 unsigned int
@@ -319,6 +334,9 @@ harfbuzz_font_for_face(PyObject* s) {
     if (!self->hb_font) {
         self->hb_font = hb_coretext_font_create(self->ct_font);
         if (!self->hb_font) fatal("Failed to create hb_font");
+        // dunno if we need this, harfbuzz docs say it is used by CoreText
+        // for optical sizing which changes the look of glyphs at small and large sizes
+        hb_font_set_ptem(self->hb_font, self->scaled_point_sz);
         hb_ot_font_set_funcs(self->hb_font);
     }
     return self->hb_font;
@@ -421,13 +439,12 @@ struct RenderBuffers {
     CGGlyph *glyphs;
     CGRect *boxes;
     CGPoint *positions;
-    CGSize *advances;
 };
 static struct RenderBuffers buffers = {0};
 
 static void
 finalize(void) {
-    free(buffers.render_buf); free(buffers.glyphs); free(buffers.boxes); free(buffers.positions); free(buffers.advances);
+    free(buffers.render_buf); free(buffers.glyphs); free(buffers.boxes); free(buffers.positions);
     memset(&buffers, 0, sizeof(struct RenderBuffers));
     if (all_fonts_collection_data) CFRelease(all_fonts_collection_data);
     if (window_title_font) CFRelease(window_title_font);
@@ -471,11 +488,10 @@ ensure_render_space(size_t width, size_t height, size_t num_glyphs) {
     }
     if (buffers.sz < num_glyphs) {
         buffers.sz = MAX(128, num_glyphs * 2);
-        buffers.advances = calloc(sizeof(buffers.advances[0]), buffers.sz);
         buffers.boxes = calloc(sizeof(buffers.boxes[0]), buffers.sz);
         buffers.glyphs = calloc(sizeof(buffers.glyphs[0]), buffers.sz);
         buffers.positions = calloc(sizeof(buffers.positions[0]), buffers.sz);
-        if (!buffers.advances || !buffers.boxes || !buffers.glyphs || !buffers.positions) fatal("Out of memory");
+        if (!buffers.boxes || !buffers.glyphs || !buffers.positions) fatal("Out of memory");
     }
 }
 
@@ -612,7 +628,7 @@ render_single_ascii_char_as_mask(const char ch, size_t *result_width, size_t *re
 
 
 static bool
-do_render(CTFontRef ct_font, bool bold, bool italic, hb_glyph_info_t *info, hb_glyph_position_t *hb_positions, unsigned int num_glyphs, pixel *canvas, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline, bool *was_colored, bool allow_resize, FONTS_DATA_HANDLE fg, bool center_glyph) {
+do_render(CTFontRef ct_font, unsigned int units_per_em, bool bold, bool italic, hb_glyph_info_t *info, hb_glyph_position_t *hb_positions, unsigned int num_glyphs, pixel *canvas, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline, bool *was_colored, bool allow_resize, FONTS_DATA_HANDLE fg, bool center_glyph) {
     unsigned int canvas_width = cell_width * num_cells;
     ensure_render_space(canvas_width, cell_height, num_glyphs);
     CGRect br = CTFontGetBoundingRectsForGlyphs(ct_font, kCTFontOrientationHorizontal, buffers.glyphs, buffers.boxes, num_glyphs);
@@ -626,17 +642,20 @@ do_render(CTFontRef ct_font, bool bold, bool italic, hb_glyph_info_t *info, hb_g
             CGFloat sz = CTFontGetSize(ct_font);
             sz *= canvas_width / right;
             CTFontRef new_font = CTFontCreateCopyWithAttributes(ct_font, sz, NULL, NULL);
-            bool ret = do_render(new_font, bold, italic, info, hb_positions, num_glyphs, canvas, cell_width, cell_height, num_cells, baseline, was_colored, false, fg, center_glyph);
+            bool ret = do_render(new_font, CTFontGetUnitsPerEm(new_font), bold, italic, info, hb_positions, num_glyphs, canvas, cell_width, cell_height, num_cells, baseline, was_colored, false, fg, center_glyph);
             CFRelease(new_font);
             return ret;
         }
     }
     CGFloat x = 0, y = 0;
-    CTFontGetAdvancesForGlyphs(ct_font, kCTFontOrientationDefault, buffers.glyphs, buffers.advances, num_glyphs);
+    CGFloat scale = CTFontGetSize(ct_font) / units_per_em;
     for (unsigned i=0; i < num_glyphs; i++) {
-        buffers.positions[i].x = x; buffers.positions[i].y = y;
-        if (debug_rendering) printf("x=%f origin=%f width=%f advance=%f\n", x, buffers.boxes[i].origin.x, buffers.boxes[i].size.width, buffers.advances[i].width);
-        x += buffers.advances[i].width; y += buffers.advances[i].height;
+        buffers.positions[i].x = x + hb_positions[i].x_offset * scale; buffers.positions[i].y = y + hb_positions[i].y_offset * scale;
+        if (debug_rendering) printf("x=%f y=%f origin=%f width=%f x_advance=%f x_offset=%f y_advance=%f y_offset=%f\n",
+                buffers.positions[i].x, buffers.positions[i].y, buffers.boxes[i].origin.x, buffers.boxes[i].size.width,
+                hb_positions[i].x_advance * scale, hb_positions[i].x_offset * scale,
+                hb_positions[i].y_advance * scale, hb_positions[i].y_offset * scale);
+        x += hb_positions[i].x_advance * scale; y += hb_positions[i].y_advance * scale;
     }
     if (*was_colored) {
         render_color_glyph(ct_font, (uint8_t*)canvas, info[0].codepoint, cell_width * num_cells, cell_height, baseline);
@@ -661,7 +680,7 @@ render_glyphs_in_cells(PyObject *s, bool bold, bool italic, hb_glyph_info_t *inf
     CTFace *self = (CTFace*)s;
     ensure_render_space(128, 128, num_glyphs);
     for (unsigned i=0; i < num_glyphs; i++) buffers.glyphs[i] = info[i].codepoint;
-    return do_render(self->ct_font, bold, italic, info, hb_positions, num_glyphs, canvas, cell_width, cell_height, num_cells, baseline, was_colored, true, fg, center_glyph);
+    return do_render(self->ct_font, self->units_per_em, bold, italic, info, hb_positions, num_glyphs, canvas, cell_width, cell_height, num_cells, baseline, was_colored, true, fg, center_glyph);
 }
 
 
@@ -691,8 +710,8 @@ postscript_name_for_face(const PyObject *face_) {
 static PyObject *
 repr(CTFace *self) {
     char buf[1024] = {0};
-    snprintf(buf, sizeof(buf)/sizeof(buf[0]), "ascent=%.1f, descent=%.1f, leading=%.1f, point_sz=%.1f, scaled_point_sz=%.1f, underline_position=%.1f underline_thickness=%.1f",
-        (self->ascent), (self->descent), (self->leading), (self->point_sz), (self->scaled_point_sz), (self->underline_position), (self->underline_thickness));
+    snprintf(buf, sizeof(buf)/sizeof(buf[0]), "ascent=%.1f, descent=%.1f, leading=%.1f, scaled_point_sz=%.1f, underline_position=%.1f underline_thickness=%.1f",
+        (self->ascent), (self->descent), (self->leading), (self->scaled_point_sz), (self->underline_position), (self->underline_thickness));
     return PyUnicode_FromFormat(
         "Face(family=%U, full_name=%U, postscript_name=%U, path=%U, units_per_em=%u, %s)",
         self->family_name, self->full_name, self->postscript_name, self->path, self->units_per_em, buf
@@ -708,7 +727,6 @@ static PyMethodDef module_methods[] = {
 static PyMemberDef members[] = {
 #define MEM(name, type) {#name, type, offsetof(CTFace, name), READONLY, #name}
     MEM(units_per_em, T_UINT),
-    MEM(point_sz, T_FLOAT),
     MEM(scaled_point_sz, T_FLOAT),
     MEM(ascent, T_FLOAT),
     MEM(descent, T_FLOAT),

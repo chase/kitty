@@ -43,6 +43,59 @@ The :doc:`ssh kitten <kittens/ssh>` is redesigned with powerful new features:
 Detailed list of changes
 -------------------------------------
 
+0.32.1 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- macOS: Fix a regression in the previous release that broke overriding keyboard shortcuts for actions present in the global menu bar (:iss:`7016`)
+
+- Fix a regression in the previous release that caused multi-key sequences to not abort when pressing an unknown key (:iss:`7022`)
+
+- Fix a regression in the previous release that caused `kitten @ launch --cwd=current` to fail over SSH (:iss:`7028`)
+
+- Fix a regression in the previous release that caused `kitten @ send-text` with a match tab parameter to send text twice to the active window (:iss:`7027`)
+
+- Fix a regression in the previous release that caused overriding of existing multi-key mappings to fail (:iss:`7044`, :iss:`7058`)
+
+- Wayland+NVIDIA: Do not request an sRGB output buffer as a bug in Wayland causes kitty to not start (:iss:`7021`)
+
+0.32.0 [2024-01-19]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- :ref:`conditional_mappings`
+
+- Support for :ref:`modal_mappings` such as in modal editors like vim
+
+- A new option :opt:`notify_on_cmd_finish` to show a desktop notification when a long running command finishes (:pull:`6817`)
+
+- A new action :ac:`send_key` to simplify mapping key presses to other keys without needing :ac:`send_text`
+
+- Allow focusing previously active OS windows via :ac:`nth_os_window` (:pull:`7009`)
+
+- Wayland: Fix a regression in the previous release that broke copying to clipboard under wl-roots based compositors in some circumstances
+  (:iss:`6890`)
+
+- macOS: Fix some combining characters not being rendered (:iss:`6898`)
+
+- macOS: Fix returning from full screen via the button when the titlebar is hidden not hiding the buttons (:iss:`6883`)
+
+- macOS: Fix newly created OS windows not always appearing on the "active" monitor (:pull:`6932`)
+
+- Font fallback: Fix the font used to render a character sometimes dependent on the order in which characters appear on screen (:iss:`6865`)
+
+- panel kitten: Fix rendering with non-zero margin/padding in kitty.conf (:iss:`6923`)
+
+- kitty keyboard protocol: Specify the behavior of the modifier bits during modifier key events (:iss:`6913`)
+
+- Wayland: Enable support for the new cursor-shape protocol so that the mouse cursor is always rendered at the correct size in compositors that support this protocol (:iss:`6914`)
+
+- GNOME Wayland: Fix remembered window size smaller than actual size (:iss:`6946`)
+
+- Mouse reporting: Fix incorrect position reported for windows with padding (:iss:`6950`)
+
+- Fix :ac:`focus_visible_window` not switching to other window in stack layout
+  when only two windows are present (:iss:`6970`)
+
+
 0.31.0 [2023-11-08]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

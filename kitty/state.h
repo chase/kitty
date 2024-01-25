@@ -255,7 +255,7 @@ typedef struct {
 typedef struct {
     Options opts;
 
-    id_type os_window_id_counter, tab_id_counter, window_id_counter, current_opengl_context_id;
+    id_type os_window_id_counter, tab_id_counter, window_id_counter;
     PyObject *boss;
     BackgroundImage *bgimage;
     OSWindow *os_windows;
@@ -265,7 +265,6 @@ typedef struct {
     bool has_render_frames;
     bool debug_rendering, debug_font_fallback;
     bool has_pending_resizes, has_pending_closes;
-    bool in_sequence_mode;
     bool check_for_active_animated_images;
     struct { double x, y; } default_dpi;
     id_type active_drag_in_window, tracked_drag_in_window;
@@ -286,9 +285,11 @@ extern GlobalState global_state;
 void gl_init(void);
 void remove_vao(ssize_t vao_idx);
 bool remove_os_window(id_type os_window_id);
-void make_os_window_context_current(OSWindow *w);
+void* make_os_window_context_current(OSWindow *w);
 void set_os_window_size(OSWindow *os_window, int x, int y);
 void get_os_window_size(OSWindow *os_window, int *w, int *h, int *fw, int *fh);
+void get_os_window_pos(OSWindow *os_window, int *x, int *y);
+void set_os_window_pos(OSWindow *os_window, int x, int y);
 void get_os_window_content_scale(OSWindow *os_window, double *xdpi, double *ydpi, float *xscale, float *yscale);
 void update_os_window_references(void);
 void mark_os_window_for_close(OSWindow* w, CloseRequest cr);
@@ -392,3 +393,4 @@ void update_menu_bar_title(PyObject *title UNUSED);
 void change_live_resize_state(OSWindow*, bool);
 bool render_os_window(OSWindow *w, monotonic_t now, bool ignore_render_frames, bool scan_for_animated_images);
 void update_mouse_pointer_shape(void);
+void adjust_window_size_for_csd(OSWindow *w, int width, int height, int *adjusted_width, int *adjusted_height);

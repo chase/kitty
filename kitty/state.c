@@ -116,7 +116,6 @@ last_focused_os_window_id(void) {
     return ans;
 }
 
-
 static id_type
 current_focused_os_window_id(void) {
     for (size_t i = 0; i < global_state.num_os_windows; i++) {
@@ -746,9 +745,8 @@ PYWRAP1(set_options) {
     Py_RETURN_NONE;
 }
 
-PYWRAP1(set_in_sequence_mode) {
-    global_state.in_sequence_mode = PyObject_IsTrue(args);
-    set_ignore_os_keyboard_processing(global_state.in_sequence_mode);
+PYWRAP1(set_ignore_os_keyboard_processing) {
+    set_ignore_os_keyboard_processing(PyObject_IsTrue(args));
     Py_RETURN_NONE;
 }
 
@@ -1036,6 +1034,8 @@ PYWRAP1(os_window_font_size) {
                 }
             }
             os_window_update_size_increments(os_window);
+            // On Wayland with CSD title needs to be re-rendered in a different font size
+            if (os_window->window_title && global_state.is_wayland) set_os_window_title(os_window, NULL);
         }
         return Py_BuildValue("d", os_window->font_sz_in_pts);
     END_WITH_OS_WINDOW
@@ -1071,6 +1071,26 @@ PYWRAP1(get_os_window_size) {
     Py_RETURN_NONE;
 }
 
+PYWRAP1(get_os_window_pos) {
+    id_type os_window_id;
+    PA("K", &os_window_id);
+    WITH_OS_WINDOW(os_window_id)
+        int x, y;
+        get_os_window_pos(os_window, &x, &y);
+        return Py_BuildValue("ii", x, y);
+    END_WITH_OS_WINDOW
+    Py_RETURN_NONE;
+}
+
+PYWRAP1(set_os_window_pos) {
+    id_type os_window_id;
+    int x, y;
+    PA("Kii", &os_window_id, &x, &y);
+    WITH_OS_WINDOW(os_window_id)
+        set_os_window_pos(os_window, x, y);
+    END_WITH_OS_WINDOW
+    Py_RETURN_NONE;
+}
 
 PYWRAP1(set_boss) {
     Py_CLEAR(global_state.boss);
@@ -1153,15 +1173,8 @@ pyset_background_image(PyObject *self UNUSED, PyObject *args) {
         bgimage = calloc(1, sizeof(BackgroundImage));
         if (!bgimage) return PyErr_NoMemory();
         bool ok;
-        if (png_data) {
-            FILE *fp = fmemopen(png_data, png_data_size, "r");
-            if (fp == NULL) {
-                PyErr_SetFromErrnoWithFilename(PyExc_OSError, path);
-                free(bgimage);
-                return NULL;
-            }
-            ok = png_from_file_pointer(fp, path, &bgimage->bitmap, &bgimage->width, &bgimage->height, &size);
-            fclose(fp);
+        if (png_data && png_data_size) {
+            ok = png_from_data(png_data, png_data_size, path, &bgimage->bitmap, &bgimage->width, &bgimage->height, &size);
         } else {
             ok = png_path_to_bitmap(path, &bgimage->bitmap, &bgimage->width, &bgimage->height, &size);
         }
@@ -1333,10 +1346,25 @@ KKK(set_active_window)
 KII(swap_tabs)
 KK5I(add_borders_rect)
 
+static PyObject*
+os_window_focus_counters(PyObject *self UNUSED, PyObject *args UNUSED) {
+    RAII_PyObject(ans, PyDict_New());
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        OSWindow *w = &global_state.os_windows[i];
+        RAII_PyObject(key, PyLong_FromUnsignedLongLong(w->id));
+        RAII_PyObject(val, PyLong_FromUnsignedLongLong(w->last_focused_counter));
+        if (!key || !val) return NULL;
+        if (PyDict_SetItem(ans, key, val) != 0) return NULL;
+    }
+    Py_INCREF(ans);
+    return ans;
+}
+
 #define M(name, arg_type) {#name, (PyCFunction)name, arg_type, NULL}
 #define MW(name, arg_type) {#name, (PyCFunction)py##name, arg_type, NULL}
 
 static PyMethodDef module_methods[] = {
+    M(os_window_focus_counters, METH_NOARGS),
     MW(update_pointer_shape, METH_VARARGS),
     MW(current_os_window, METH_NOARGS),
     MW(next_window_id, METH_NOARGS),
@@ -1350,7 +1378,7 @@ static PyMethodDef module_methods[] = {
     MW(redirect_mouse_handling, METH_O),
     MW(mouse_selection, METH_VARARGS),
     MW(set_window_logo, METH_VARARGS),
-    MW(set_in_sequence_mode, METH_O),
+    MW(set_ignore_os_keyboard_processing, METH_O),
     MW(handle_for_window_id, METH_VARARGS),
     MW(update_ime_position_for_window, METH_VARARGS),
     MW(pt_to_px, METH_VARARGS),
@@ -1385,6 +1413,8 @@ static PyMethodDef module_methods[] = {
     MW(sync_os_window_title, METH_VARARGS),
     MW(get_os_window_title, METH_VARARGS),
     MW(set_os_window_title, METH_VARARGS),
+    MW(get_os_window_pos, METH_VARARGS),
+    MW(set_os_window_pos, METH_VARARGS),
     MW(global_font_size, METH_VARARGS),
     MW(set_background_image, METH_VARARGS),
     MW(os_window_font_size, METH_VARARGS),

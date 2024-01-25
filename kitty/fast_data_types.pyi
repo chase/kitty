@@ -514,9 +514,9 @@ def create_os_window(
     wm_class_class: str,
     window_state: Optional[int] = WINDOW_NORMAL,
     load_programs: Optional[Callable[[bool], None]] = None,
-    x: Optional[int] = -1,
-    y: Optional[int] = -1,
-    disallow_override_title: Optional[bool] = False,
+    x: Optional[int] = None,
+    y: Optional[int] = None,
+    disallow_override_title: bool = False,
 ) -> int:
     pass
 
@@ -604,7 +604,7 @@ def thread_write(fd: int, data: bytes) -> None:
     pass
 
 
-def set_in_sequence_mode(yes: bool) -> None:
+def set_ignore_os_keyboard_processing(yes: bool) -> None:
     pass
 
 
@@ -1210,6 +1210,7 @@ class Screen:
     def current_pointer_shape(self) -> str: ...
     def change_pointer_shape(self, op: str, name: str) -> None: ...
 
+    def bell(self) -> None: ...
 
 def set_tab_bar_render_data(
     os_window_id: int, screen: Screen, left: int, top: int, right: int, bottom: int
@@ -1395,6 +1396,12 @@ def get_os_window_size(os_window_id: int) -> Optional[OSWindowSize]:
     pass
 
 
+def get_os_window_pos(os_window_id: int) -> Tuple[int, int]:
+    pass
+
+def set_os_window_pos(os_window_id: int, x: int, y: int) -> None:
+    pass
+
 def get_all_processes() -> Tuple[int, ...]:
     pass
 
@@ -1512,6 +1519,11 @@ class AES256GCMDecrypt:
     def add_data_to_be_decrypted(self, data: bytes, finished: bool = False) -> bytes: ...
 
 
+class Shlex:
+    def __init__(self, src: str): ...
+    def next_word(self) -> Tuple[int, str]: ...
+
+
 class SingleKey:
 
     __slots__ = ()
@@ -1551,3 +1563,4 @@ def base64_decode(src: Union[bytes,str]) -> bytes: ...
 def cocoa_recreate_global_menu() -> None: ...
 def cocoa_clear_global_shortcuts() -> None: ...
 def update_pointer_shape(os_window_id: int) -> None: ...
+def os_window_focus_counters() -> Dict[int, int]: ...

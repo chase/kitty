@@ -111,7 +111,7 @@ function __ksi_schedule --on-event fish_prompt -d "Setup kitty integration after
     # Note that neither alias nor function is recursive in fish so if the user defines an alias/function
     # for sudo it will be clobbered by us, so only install this if sudo is not already function
     if not contains "no-sudo" $_ksi
-        and test -n "$TERMINFO" -a "file" = (type -t sudo)
+        and test -n "$TERMINFO" -a "file" = (type -t sudo 2> /dev/null || echo "x")
         and not test -r "/usr/share/terminfo/x/xterm-kitty" -o -r "/usr/share/terminfo/78/xterm-kitty" 
         # Ensure terminfo is available in sudo
         function sudo
@@ -121,7 +121,7 @@ function __ksi_schedule --on-event fish_prompt -d "Setup kitty integration after
                     set is_sudoedit "y"
                     break
                 end
-                if not string match -r -q "^-" "$arg" and not string match -r -q "=" "$arg"
+                if not string match -r -q -- "^-" "$arg" and not string match -r -q -- "=" "$arg"
                     break  # reached the command
                 end
             end

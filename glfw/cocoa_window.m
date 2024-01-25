@@ -1259,6 +1259,15 @@ is_ascii_control_char(char x) {
     }
 }
 
+static bool
+is_modifier_pressed(NSUInteger flags, NSUInteger target_mask, NSUInteger other_mask, NSUInteger either_mask) {
+    bool target_pressed = (flags & target_mask) != 0;
+    bool other_pressed = (flags & other_mask) != 0;
+    bool either_pressed = (flags & either_mask) != 0;
+    if (either_pressed != (target_pressed || other_pressed)) return either_pressed;
+    return target_pressed;
+}
+
 - (void)flagsChanged:(NSEvent *)event
 {
     int action = GLFW_RELEASE;
@@ -1271,29 +1280,24 @@ is_ascii_control_char(char x) {
     const bool process_text = !_glfw.ignoreOSKeyboardProcessing && (!window->ns.textInputFilterCallback || window->ns.textInputFilterCallback(key, mods, keycode, modifierFlags) != 1);
     const char *mod_name = "unknown";
 
+    // Code for handling modifier key events copied form SDL_cocoakeyboard.m, with thanks. See IsModifierKeyPressedFunction()
+#define action_for(modname, target_mask, other_mask, either_mask) action = is_modifier_pressed([event modifierFlags], target_mask, other_mask, either_mask) ? GLFW_PRESS : GLFW_RELEASE; mod_name = #modname; break;
     switch(key) {
         case GLFW_FKEY_CAPS_LOCK:
             mod_name = "capslock";
             action = modifierFlags & NSEventModifierFlagCapsLock ? GLFW_PRESS : GLFW_RELEASE; break;
-        case GLFW_FKEY_LEFT_SUPER:
-        case GLFW_FKEY_RIGHT_SUPER:
-            mod_name = "super";
-            action = modifierFlags & NSEventModifierFlagCommand ? GLFW_PRESS : GLFW_RELEASE; break;
-        case GLFW_FKEY_LEFT_CONTROL:
-        case GLFW_FKEY_RIGHT_CONTROL:
-            mod_name = "ctrl";
-            action = modifierFlags & NSEventModifierFlagControl ? GLFW_PRESS : GLFW_RELEASE; break;
-        case GLFW_FKEY_LEFT_ALT:
-        case GLFW_FKEY_RIGHT_ALT:
-            mod_name = "alt";
-            action = modifierFlags & NSEventModifierFlagOption ? GLFW_PRESS : GLFW_RELEASE; break;
-        case GLFW_FKEY_LEFT_SHIFT:
-        case GLFW_FKEY_RIGHT_SHIFT:
-            mod_name = "shift";
-            action = modifierFlags & NSEventModifierFlagShift ? GLFW_PRESS : GLFW_RELEASE; break;
+        case GLFW_FKEY_LEFT_SUPER: action_for(super, NX_DEVICELCMDKEYMASK, NX_DEVICERCMDKEYMASK, NX_COMMANDMASK);
+        case GLFW_FKEY_RIGHT_SUPER: action_for(super, NX_DEVICERCMDKEYMASK, NX_DEVICELCMDKEYMASK, NX_COMMANDMASK);
+        case GLFW_FKEY_LEFT_CONTROL: action_for(ctrl, NX_DEVICELCTLKEYMASK, NX_DEVICERCTLKEYMASK, NX_CONTROLMASK);
+        case GLFW_FKEY_RIGHT_CONTROL: action_for(ctrl, NX_DEVICERCTLKEYMASK, NX_DEVICELCTLKEYMASK, NX_CONTROLMASK);
+        case GLFW_FKEY_LEFT_ALT: action_for(alt, NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK, NX_ALTERNATEMASK);
+        case GLFW_FKEY_RIGHT_ALT: action_for(alt, NX_DEVICERALTKEYMASK, NX_DEVICELALTKEYMASK, NX_ALTERNATEMASK);
+        case GLFW_FKEY_LEFT_SHIFT: action_for(shift, NX_DEVICELSHIFTKEYMASK, NX_DEVICERSHIFTKEYMASK, NX_SHIFTMASK);
+        case GLFW_FKEY_RIGHT_SHIFT: action_for(shift, NX_DEVICERSHIFTKEYMASK, NX_DEVICELSHIFTKEYMASK, NX_SHIFTMASK);
         default:
             return;
     }
+#undef action_for
     GLFWkeyevent glfw_keyevent = {.key = key, .native_key = keycode, .native_key_id = keycode, .action = action, .mods = mods};
     debug_key("\x1b[33mflagsChanged:\x1b[m modifier: %s native_key: 0x%x (%s) glfw_key: 0x%x %s\n",
             mod_name, keycode, safe_name_for_keycode(keycode), key, format_mods(mods));
@@ -1510,7 +1514,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     (void)range; (void)actualRange;
     if (_glfw.callbacks.get_ime_cursor_position) {
         GLFWIMEUpdateEvent ev = { .type = GLFW_IME_UPDATE_CURSOR_POSITION };
-        if (_glfw.callbacks.get_ime_cursor_position((GLFWwindow*)window, &ev)) {
+        if (window && _glfw.callbacks.get_ime_cursor_position((GLFWwindow*)window, &ev)) {
             const CGFloat left = (CGFloat)ev.cursor.left / window->ns.xscale;
             const CGFloat top = (CGFloat)ev.cursor.top / window->ns.yscale;
             const CGFloat cellWidth = (CGFloat)ev.cursor.width / window->ns.xscale;
@@ -1716,6 +1720,24 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     return YES;
 }
 
+static void
+update_titlebar_button_visibility_after_fullscreen_transition(_GLFWwindow* w, bool traditional, bool made_fullscreen) {
+    // Update window button visibility
+    if (w->ns.titlebar_hidden) {
+        NSWindow *window = w->ns.object;
+        // The hidden buttons might be automatically reset to be visible after going full screen
+        // to show up in the auto-hide title bar, so they need to be set back to hidden.
+        BOOL button_hidden = YES;
+        // When title bar is configured to be hidden, it should be shown with buttons (auto-hide) after going to full screen.
+        if (!traditional) {
+            button_hidden = (BOOL) !made_fullscreen;
+        }
+        [[window standardWindowButton: NSWindowCloseButton] setHidden:button_hidden];
+        [[window standardWindowButton: NSWindowMiniaturizeButton] setHidden:button_hidden];
+        [[window standardWindowButton: NSWindowZoomButton] setHidden:button_hidden];
+    }
+}
+
 - (void)toggleFullScreen:(nullable id)sender
 {
     if (glfw_window) {
@@ -1723,6 +1745,8 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
         if (glfw_window->ns.toggleFullscreenCallback && glfw_window->ns.toggleFullscreenCallback((GLFWwindow*)glfw_window) == 1) return;
         glfw_window->ns.in_fullscreen_transition = true;
     }
+    NSWindowStyleMask sm = [self styleMask];
+    bool is_fullscreen_already = (sm & NSWindowStyleMaskFullScreen) != 0;
     // When resizeIncrements is set, Cocoa cannot restore the original window size after returning from fullscreen.
     const NSSize original = [self resizeIncrements];
     [self setResizeIncrements:NSMakeSize(1.0, 1.0)];
@@ -1731,6 +1755,7 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
     // When the window decoration is hidden, toggling fullscreen causes the style mask to be changed,
     // and causes the first responder to be cleared.
     if (glfw_window && !glfw_window->decorated && glfw_window->ns.view) [self makeFirstResponder:glfw_window->ns.view];
+    update_titlebar_button_visibility_after_fullscreen_transition(glfw_window, false, !is_fullscreen_already);
 }
 
 - (void)zoom:(id)sender
@@ -1796,9 +1821,15 @@ static bool createNativeWindow(_GLFWwindow* window,
     else
     {
         [(NSWindow*) window->ns.object center];
-        _glfw.ns.cascadePoint =
-            NSPointToCGPoint([window->ns.object cascadeTopLeftFromPoint:
-                              NSPointFromCGPoint(_glfw.ns.cascadePoint)]);
+        CGRect screen_frame = [[(NSWindow*) window->ns.object screen] frame];
+        if (CGRectContainsPoint(screen_frame, _glfw.ns.cascadePoint)
+            || CGPointEqualToPoint(CGPointZero, _glfw.ns.cascadePoint)) {
+            _glfw.ns.cascadePoint =
+                NSPointToCGPoint([window->ns.object cascadeTopLeftFromPoint:
+                                  NSPointFromCGPoint(_glfw.ns.cascadePoint)]);
+        } else {
+            _glfw.ns.cascadePoint = CGPointZero;
+        }
 
         if (wndconfig->resizable)
         {
@@ -2657,19 +2688,7 @@ bool _glfwPlatformToggleFullscreen(_GLFWwindow* w, unsigned int flags) {
         if (in_fullscreen) made_fullscreen = false;
         [window toggleFullScreen: nil];
     }
-    // Update window button visibility
-    if (w->ns.titlebar_hidden) {
-        // The hidden buttons might be automatically reset to be visible after going full screen
-        // to show up in the auto-hide title bar, so they need to be set back to hidden.
-        BOOL button_hidden = YES;
-        // When title bar is configured to be hidden, it should be shown with buttons (auto-hide) after going to full screen.
-        if (!traditional) {
-            button_hidden = (BOOL) !made_fullscreen;
-        }
-        [[window standardWindowButton: NSWindowCloseButton] setHidden:button_hidden];
-        [[window standardWindowButton: NSWindowMiniaturizeButton] setHidden:button_hidden];
-        [[window standardWindowButton: NSWindowZoomButton] setHidden:button_hidden];
-    }
+    update_titlebar_button_visibility_after_fullscreen_transition(w, traditional, made_fullscreen);
     return made_fullscreen;
 }
 

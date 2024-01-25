@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
 import sys
@@ -82,3 +82,5 @@ class TestGLFW(BaseTest):
         test('>ế<')
         test('>𐍈<')
         test('∮ E⋅da = Q,  n → ∞, 𐍈∑ f(i) = ∏ g(i)')
+        self.ae(utf_8_strndup(b'\xf0\x9f\x98\xb8', 3).value, b'')
+        self.ae(utf_8_strndup(b'\xc3\xb6\xf0\x9f\x98\xb8', 4).value, b'\xc3\xb6')

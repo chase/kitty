@@ -6,7 +6,6 @@
 
 #include "state.h"
 #include "cleanup.h"
-#include "fonts.h"
 #include "monotonic.h"
 #include "charsets.h"
 #include <structmember.h>
@@ -117,7 +116,7 @@ min_size_for_os_window(OSWindow *window, int *min_width, int *min_height) {
 }
 
 
-static void
+void
 adjust_window_size_for_csd(OSWindow *w, int width, int height, int *adjusted_width, int *adjusted_height) {
     *adjusted_width = width; *adjusted_height = height;
     if (global_state.is_wayland) {
@@ -323,9 +322,13 @@ change_live_resize_state(OSWindow *w, bool in_progress) {
     if (in_progress != w->live_resize.in_progress) {
         w->live_resize.in_progress = in_progress;
         w->live_resize.num_of_resize_events = 0;
-        apply_swap_interval(in_progress ? 0 : -1);
 #ifdef __APPLE__
         cocoa_out_of_sequence_render(w);
+#else
+        GLFWwindow *orig_ctx = make_os_window_context_current(w);
+        apply_swap_interval(in_progress ? 0 : -1);
+        if (orig_ctx) glfwMakeContextCurrent(orig_ctx);
+
 #endif
     }
 }
@@ -387,25 +390,31 @@ refresh_callback(GLFWwindow *w) {
 
 static int mods_at_last_key_or_button_event = 0;
 
+#ifndef __APPLE__
+typedef struct modifier_key_state {
+    bool left, right;
+} modifier_key_state;
+
 static int
-key_to_modifier(uint32_t key) {
+key_to_modifier(uint32_t key, bool *is_left) {
+    *is_left = false;
     switch(key) {
-        case GLFW_FKEY_LEFT_SHIFT:
+        case GLFW_FKEY_LEFT_SHIFT: *is_left = true; /* fallthrough */
         case GLFW_FKEY_RIGHT_SHIFT:
             return GLFW_MOD_SHIFT;
-        case GLFW_FKEY_LEFT_CONTROL:
+        case GLFW_FKEY_LEFT_CONTROL: *is_left = true; /* fallthrough */
         case GLFW_FKEY_RIGHT_CONTROL:
             return GLFW_MOD_CONTROL;
-        case GLFW_FKEY_LEFT_ALT:
+        case GLFW_FKEY_LEFT_ALT: *is_left = true; /* fallthrough */
         case GLFW_FKEY_RIGHT_ALT:
             return GLFW_MOD_ALT;
-        case GLFW_FKEY_LEFT_SUPER:
+        case GLFW_FKEY_LEFT_SUPER: *is_left = true; /* fallthrough */
         case GLFW_FKEY_RIGHT_SUPER:
             return GLFW_MOD_SUPER;
-        case GLFW_FKEY_LEFT_HYPER:
+        case GLFW_FKEY_LEFT_HYPER: *is_left = true; /* fallthrough */
         case GLFW_FKEY_RIGHT_HYPER:
             return GLFW_MOD_HYPER;
-        case GLFW_FKEY_LEFT_META:
+        case GLFW_FKEY_LEFT_META: *is_left = true; /* fallthrough */
         case GLFW_FKEY_RIGHT_META:
             return GLFW_MOD_META;
         default:
@@ -413,18 +422,40 @@ key_to_modifier(uint32_t key) {
     }
 }
 
+
+static void
+update_modifier_state_on_modifier_key_event(GLFWkeyevent *ev, int key_modifier, bool is_left) {
+    // Update mods state to be what the kitty keyboard protocol requires, as on Linux modifier key events do not update modifier bits
+    static modifier_key_state all_states[8] = {0};
+    modifier_key_state *state = all_states + MIN((unsigned)__builtin_ctz(key_modifier), sizeof(all_states)-1);
+    const int modifier_was_set_before_event = ev->mods & key_modifier;
+    const bool is_release = ev->action == GLFW_RELEASE;
+    if (modifier_was_set_before_event) {
+        // a press with modifier already set means other modifier key is pressed
+        if (!is_release) { if (is_left) state->right = true; else state->left = true;  }
+    } else {
+        // if modifier is not set before event, means both keys are released
+        state->left = false; state->right = false;
+    }
+    if (is_release) {
+        if (is_left) state->left = false; else state->right = false;
+        if (modifier_was_set_before_event && !state->left && !state->right) ev->mods &= ~key_modifier;
+    } else {
+        if (is_left) state->left = true; else state->right = true;
+        ev->mods |= key_modifier;
+    }
+}
+#endif
+
 static void
 key_callback(GLFWwindow *w, GLFWkeyevent *ev) {
     if (!set_callback_window(w)) return;
+#ifndef __APPLE__
+    bool is_left;
+    int key_modifier = key_to_modifier(ev->key, &is_left);
+    if (key_modifier != -1) update_modifier_state_on_modifier_key_event(ev, key_modifier, is_left);
+#endif
     mods_at_last_key_or_button_event = ev->mods;
-    int key_modifier = key_to_modifier(ev->key);
-    if (key_modifier != -1) {
-        if (ev->action == GLFW_RELEASE) {
-            mods_at_last_key_or_button_event &= ~key_modifier;
-        } else {
-            mods_at_last_key_or_button_event |= key_modifier;
-        }
-    }
     global_state.callback_os_window->cursor_blink_zero_time = monotonic();
     if (is_window_ready_for_callbacks()) on_key_input(ev);
     global_state.callback_os_window = NULL;
@@ -753,13 +784,14 @@ set_default_window_icon(PyObject UNUSED *self, PyObject *args) {
 }
 
 
-void
+void*
 make_os_window_context_current(OSWindow *w) {
     GLFWwindow *current_context = glfwGetCurrentContext();
     if (w->handle != current_context) {
         glfwMakeContextCurrent(w->handle);
-        global_state.current_opengl_context_id = w->id;
+        return current_context;
     }
+    return NULL;
 }
 
 void
@@ -771,6 +803,16 @@ get_os_window_size(OSWindow *os_window, int *w, int *h, int *fw, int *fh) {
 void
 set_os_window_size(OSWindow *os_window, int x, int y) {
     glfwSetWindowSize(os_window->handle, x, y);
+}
+
+void
+get_os_window_pos(OSWindow *os_window, int *x, int *y) {
+    glfwGetWindowPos(os_window->handle, x, y);
+}
+
+void
+set_os_window_pos(OSWindow *os_window, int x, int y) {
+    glfwSetWindowPos(os_window->handle, x, y);
 }
 
 static void
@@ -1008,13 +1050,15 @@ native_window_handle(GLFWwindow *w) {
 
 static PyObject*
 create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
-    int x = -1, y = -1, window_state = WINDOW_NORMAL, disallow_override_title = 0;
+    int x = INT_MIN, y = INT_MIN, window_state = WINDOW_NORMAL, disallow_override_title = 0;
     char *title, *wm_class_class, *wm_class_name;
-    PyObject *optional_window_state = NULL, *load_programs = NULL, *get_window_size, *pre_show_callback;
+    PyObject *optional_window_state = NULL, *load_programs = NULL, *get_window_size, *pre_show_callback, *optional_x = NULL, *optional_y = NULL;
     static const char* kwlist[] = {"get_window_size", "pre_show_callback", "title", "wm_class_name", "wm_class_class", "window_state", "load_programs", "x", "y", "disallow_override_title", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOsss|OOiip", (char**)kwlist,
-        &get_window_size, &pre_show_callback, &title, &wm_class_name, &wm_class_class, &optional_window_state, &load_programs, &x, &y, &disallow_override_title)) return NULL;
-    if (optional_window_state && optional_window_state != Py_None) window_state = (int) PyLong_AsLong(optional_window_state);
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOsss|OOOOp", (char**)kwlist,
+        &get_window_size, &pre_show_callback, &title, &wm_class_name, &wm_class_class, &optional_window_state, &load_programs, &optional_x, &optional_y, &disallow_override_title)) return NULL;
+    if (optional_window_state && optional_window_state != Py_None) { if (!PyLong_Check(optional_window_state)) { PyErr_SetString(PyExc_TypeError, "window_state must be an int"); return NULL; } window_state = (int) PyLong_AsLong(optional_window_state); }
+    if (optional_x && optional_x != Py_None) { if (!PyLong_Check(optional_x)) { PyErr_SetString(PyExc_TypeError, "x must be an int"); return NULL;} x = (int)PyLong_AsLong(optional_x); }
+    if (optional_y && optional_y != Py_None) { if (!PyLong_Check(optional_y)) { PyErr_SetString(PyExc_TypeError, "y must be an int"); return NULL;} y = (int)PyLong_AsLong(optional_y); }
     if (window_state < WINDOW_NORMAL || window_state > WINDOW_MINIMIZED) window_state = WINDOW_NORMAL;
 
     static bool is_first_window = true;
@@ -1030,6 +1074,10 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         glfwSetHasCurrentSelectionCallback(has_current_selection);
         glfwSetIMECursorPositionCallback(get_ime_cursor_position);
         glfwSetSystemColorThemeChangeCallback(on_system_color_scheme_change);
+        // Request SRGB output buffer
+        // Prevents kitty from starting on Wayland + NVIDIA, sigh: https://github.com/kovidgoyal/kitty/issues/7021
+        // Remove after https://github.com/NVIDIA/egl-wayland/issues/85 is fixed.
+        if (!global_state.is_wayland || !is_nvidia_gpu_driver()) glfwWindowHint(GLFW_SRGB_CAPABLE, true);
 #ifdef __APPLE__
         cocoa_set_activation_policy(OPT(macos_hide_from_tasks));
         glfwWindowHint(GLFW_COCOA_GRAPHICS_SWITCHING, true);
@@ -1110,7 +1158,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     PyObject *pret = PyObject_CallFunction(pre_show_callback, "N", native_window_handle(glfw_window));
     if (pret == NULL) return NULL;
     Py_DECREF(pret);
-    if (x != -1 && y != -1) glfwSetWindowPos(glfw_window, x, y);
+    if (x != INT_MIN && y != INT_MIN) glfwSetWindowPos(glfw_window, x, y);
 #ifndef __APPLE__
     glfwShowWindow(glfw_window);
 #endif
@@ -1129,7 +1177,11 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         if (ret == NULL) return NULL;
         Py_DECREF(ret);
         get_platform_dependent_config_values(glfw_window);
+        GLint encoding;
+        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_BACK_LEFT, GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+        if (encoding != GL_SRGB) log_error("The output buffer does not support sRGB color encoding, colors will be incorrect.");
         is_first_window = false;
+
     }
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
@@ -1176,7 +1228,6 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     w->cursor_blink_zero_time = now;
     w->last_mouse_activity_at = now;
     w->is_semi_transparent = is_semi_transparent;
-    global_state.current_opengl_context_id = w->id;
     if (want_semi_transparent && !w->is_semi_transparent) {
         static bool warned = false;
         if (!warned) {
@@ -1649,6 +1700,10 @@ request_window_attention(id_type kitty_window_id, bool audio_bell) {
 
 void
 set_os_window_title(OSWindow *w, const char *title) {
+    if (!title) {
+        if (global_state.is_wayland) glfwWaylandRedrawCSDWindowTitle(w->handle);
+        return;
+    }
     static char buf[2048];
     strip_csi_(title, buf, arraysz(buf));
     glfwSetWindowTitle(w->handle, buf);

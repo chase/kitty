@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import locale
@@ -59,6 +59,7 @@ from .utils import (
     log_error,
     parse_os_window_state,
     safe_mtime,
+    shlex_split,
     single_instance,
     startup_notification_handler,
     unix_socket_paths,
@@ -218,9 +219,11 @@ def set_cocoa_global_shortcuts(opts: Options) -> Dict[str, SingleKey]:
     if is_macos:
         from collections import defaultdict
         func_map = defaultdict(list)
-        for k, v in opts.keymap.items():
-            parts = tuple(v.split())
-            func_map[parts].append(k)
+        for single_key, v in opts.keyboard_modes[''].keymap.items():
+            kd = v[-1]  # the last definition is the active one
+            if kd.is_suitable_for_global_shortcut:
+                parts = tuple(kd.definition.split())
+                func_map[parts].append(single_key)
 
         for ac in ('new_os_window', 'close_os_window', 'close_tab', 'edit_config_file', 'previous_tab',
                    'next_tab', 'new_tab', 'new_window', 'close_window', 'toggle_macos_secure_keyboard_entry', 'toggle_fullscreen',
@@ -356,9 +359,8 @@ def macos_cmdline(argv_args: List[str]) -> List[str]:
             raw = f.read()
     except FileNotFoundError:
         return argv_args
-    import shlex
     raw = raw.strip()
-    ans = shlex.split(raw)
+    ans = list(shlex_split(raw))
     if ans and ans[0] == 'kitty':
         del ans[0]
     return ans

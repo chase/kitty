@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import json
@@ -46,6 +46,9 @@ from .fast_data_types import (
     CURSOR_UNDERLINE,
     DCS,
     GLFW_MOD_CONTROL,
+    GLFW_PRESS,
+    GLFW_RELEASE,
+    GLFW_REPEAT,
     NO_CURSOR_SHAPE,
     OSC,
     SCROLL_FULL,
@@ -56,6 +59,7 @@ from .fast_data_types import (
     Screen,
     add_timer,
     add_window,
+    base64_decode,
     cell_size_for_window,
     click_mouse_cmd_output,
     click_mouse_url,
@@ -83,7 +87,9 @@ from .fast_data_types import (
 from .keys import keyboard_mode_name, mod_mask
 from .notify import (
     NotificationCommand,
+    OnlyWhen,
     handle_notification_cmd,
+    notify_with_command,
     sanitize_identifier_pat,
 )
 from .options.types import Options
@@ -165,6 +171,18 @@ class CwdRequest:
                 set_cwd_in_cmdline(reported_cwd, argv)
                 set_server_args_in_cmdline(server_args, argv, allocate_tty=not run_shell)
                 if env is not None:
+                    # Assume env is coming from a local process so drop env
+                    # vars that can cause issues when set on the remote host
+                    if env.get('KITTY_KITTEN_RUN_MODULE') == 'ssh_askpass':
+                        for k in ('KITTY_KITTEN_RUN_MODULE', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE'):
+                            env.pop(k, None)
+                    for k in (
+                        'HOME', 'USER', 'TEMP', 'TMP', 'TMPDIR', 'PATH', 'PWD', 'OLDPWD', 'KITTY_INSTALLATION_DIR',
+                        'HOSTNAME', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'KITTY_STDIO_FORWARDED',
+                        'KITTY_PUBLIC_KEY', 'TERMINFO', 'XDG_RUNTIME_DIR', 'XDG_VTNR',
+                        'XDG_DATA_DIRS', 'XAUTHORITY', 'EDITOR', 'VISUAL',
+                    ):
+                        env.pop(k, None)
                     set_env_in_cmdline(env, argv, clone=False)
                 return ''
             if not window.child_is_remote and (self.request_type is CwdRequestType.last_reported or window.at_prompt):
@@ -259,6 +277,7 @@ class Watchers:
     on_focus_change: List[Watcher]
     on_set_user_var: List[Watcher]
     on_title_change: List[Watcher]
+    on_cmd_startstop: List[Watcher]
 
     def __init__(self) -> None:
         self.on_resize = []
@@ -266,6 +285,7 @@ class Watchers:
         self.on_focus_change = []
         self.on_set_user_var = []
         self.on_title_change = []
+        self.on_cmd_startstop = []
 
     def add(self, others: 'Watchers') -> None:
         def merge(base: List[Watcher], other: List[Watcher]) -> None:
@@ -277,10 +297,11 @@ class Watchers:
         merge(self.on_focus_change, others.on_focus_change)
         merge(self.on_set_user_var, others.on_set_user_var)
         merge(self.on_title_change, others.on_title_change)
+        merge(self.on_cmd_startstop, others.on_cmd_startstop)
 
     def clear(self) -> None:
         del self.on_close[:], self.on_resize[:], self.on_focus_change[:]
-        del self.on_set_user_var[:], self.on_title_change[:]
+        del self.on_set_user_var[:], self.on_title_change[:], self.on_cmd_startstop[:]
 
     def copy(self) -> 'Watchers':
         ans = Watchers()
@@ -289,11 +310,13 @@ class Watchers:
         ans.on_focus_change = self.on_focus_change[:]
         ans.on_set_user_var = self.on_set_user_var[:]
         ans.on_title_change = self.on_title_change[:]
+        ans.on_cmd_startstop = self.on_cmd_startstop[:]
         return ans
 
     @property
     def has_watchers(self) -> bool:
-        return bool(self.on_close or self.on_resize or self.on_focus_change)
+        return bool(self.on_close or self.on_resize or self.on_focus_change
+                    or self.on_set_user_var or self.on_title_change or self.on_cmd_startstop)
 
 
 def call_watchers(windowref: Callable[[], Optional['Window']], which: str, data: Dict[str, Any]) -> None:
@@ -481,7 +504,7 @@ global_watchers = GlobalWatchers()
 
 def replace_control_codes(text: str) -> str:
     # Replace all control codes other than tab, newline and space with their graphical counterparts
-    def sub(m: re.Match[str]) -> str:
+    def sub(m: 're.Match[str]') -> str:
         c = ord(m.group())
         if c < 0x20:
             return chr(0x2400 + c)
@@ -536,6 +559,7 @@ class Window:
         self.current_mouse_event_button = 0
         self.current_clipboard_read_ask: Optional[bool] = None
         self.prev_osc99_cmd = NotificationCommand()
+        self.last_cmd_output_start_time = 0.
         self.actions_on_close: List[Callable[['Window'], None]] = []
         self.actions_on_focus_change: List[Callable[['Window', bool], None]] = []
         self.actions_on_removal: List[Callable[['Window'], None]] = []
@@ -720,9 +744,6 @@ class Window:
         return not self.at_prompt
 
     def matches(self, field: str, pat: MatchPatternType) -> bool:
-        if not pat:
-            return False
-
         if isinstance(pat, tuple):
             if field == 'env':
                 return key_val_matcher(self.child.environ.items(), *pat)
@@ -815,7 +836,7 @@ class Window:
         if self.destroyed:
             return
         if self.needs_layout or new_geometry.xnum != self.screen.columns or new_geometry.ynum != self.screen.lines:
-            self.screen.resize(new_geometry.ynum, new_geometry.xnum)
+            self.screen.resize(max(0, new_geometry.ynum), max(0, new_geometry.xnum))
             self.needs_layout = False
             call_watchers(weakref.ref(self), 'on_resize', {'old_geometry': self.geometry, 'new_geometry': new_geometry})
         current_pty_size = (
@@ -861,6 +882,47 @@ class Window:
             return True
         self.write_to_child(text)
         return False
+
+    @ac(
+        'misc', '''
+        Send the specified keys to the active window.
+        Note that the key will be sent only if the current keyboard mode of the program running in the terminal supports it.
+        Both key press and key release are sent. First presses for all specified keys and then releases in reverse order.
+        To send a pattern of press and release for multiple keys use the :ac:`combine` action. For example::
+
+            map f1 send_key ctrl+x alt+y
+            map f1 combine : send_key ctrl+x : send_key alt+y
+    ''')
+    def send_key(self, *args: str) -> bool:
+        from .options.utils import parse_shortcut
+        km = get_options().kitty_mod
+        passthrough = True
+        events = []
+        prev = ''
+        for human_key in args:
+            sk = parse_shortcut(human_key)
+            if sk.is_native:
+                raise ValueError(f'Native key codes not allowed in send_key: {human_key}')
+            sk = sk.resolve_kitty_mod(km)
+            events.append(KeyEvent(key=sk.key, mods=sk.mods, action=GLFW_REPEAT if human_key == prev else GLFW_PRESS))
+            prev = human_key
+        for ev in events + [KeyEvent(key=x.key, mods=x.mods, action=GLFW_RELEASE) for x in reversed(events)]:
+            enc = self.encoded_key(ev)
+            if enc:
+                self.write_to_child(enc)
+                passthrough = False
+        return passthrough
+
+    def send_key_sequence(self, *keys: KeyEvent, synthesize_release_events: bool = True) -> None:
+        for key in keys:
+            enc = self.encoded_key(key)
+            if enc:
+                self.write_to_child(enc)
+            if synthesize_release_events and key.action != GLFW_RELEASE:
+                rkey = KeyEvent(key=key.key, mods=key.mods, action=GLFW_RELEASE)
+                enc = self.encoded_key(rkey)
+                if enc:
+                    self.write_to_child(enc)
 
     @ac('debug', 'Show a dump of the current lines in the scrollback + screen with their line attributes')
     def dump_lines_with_attrs(self) -> None:
@@ -939,9 +1001,8 @@ class Window:
         for record in raw_data.split(';'):
             key, _, val = record.partition('=')
             if key == 'SetUserVar':
-                from base64 import standard_b64decode
                 ukey, has_equal, uval = val.partition('=')
-                self.set_user_var(ukey, (standard_b64decode(uval) if uval else b'') if has_equal == '=' else None)
+                self.set_user_var(ukey, (base64_decode(uval) if uval else b'') if has_equal == '=' else None)
 
     def desktop_notify(self, osc_code: int, raw_data: str) -> None:
         if osc_code == 1337:
@@ -1315,6 +1376,42 @@ class Window:
             else:
                 if self.child_title:
                     self.title_stack.append(self.child_title)
+
+    def cmd_output_marking(self, is_start: bool) -> None:
+        if is_start:
+            start_time = monotonic()
+            self.last_cmd_output_start_time = start_time
+
+            self.call_watchers(self.watchers.on_cmd_startstop, {"is_start": True, "time": start_time})
+        else:
+            if self.last_cmd_output_start_time > 0.:
+                end_time = monotonic()
+                last_cmd_output_duration = end_time - self.last_cmd_output_start_time
+                self.last_cmd_output_start_time = 0.
+
+                self.call_watchers(self.watchers.on_cmd_startstop, {"is_start": False, "time": end_time})
+
+                opts = get_options()
+                when, duration, action, cmdline = opts.notify_on_cmd_finish
+
+                if last_cmd_output_duration >= duration and when != 'never':
+                    cmd = NotificationCommand()
+                    cmd.title = 'kitty'
+                    cmd.body = 'Command finished in a background window.\nClick to focus.'
+                    cmd.actions = 'focus'
+                    cmd.only_when = OnlyWhen(when)
+                    if action == 'notify':
+                        notify_with_command(cmd, self.id)
+                    elif action == 'bell':
+                        def bell(title: str, body: str, identifier: str) -> None:
+                            self.screen.bell()
+                        notify_with_command(cmd, self.id, notify_implementation=bell)
+                    elif action == 'command':
+                        def run_command(title: str, body: str, identifier: str) -> None:
+                            open_cmd(cmdline)
+                        notify_with_command(cmd, self.id, notify_implementation=run_command)
+                    else:
+                        raise ValueError(f'Unknown action in option `notify_on_cmd_finish`: {action}')
     # }}}
 
     # mouse actions {{{

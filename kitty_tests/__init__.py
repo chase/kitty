@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import fcntl
@@ -51,6 +51,9 @@ class Callbacks:
         self.ctbuf += ''
 
     def color_profile_popped(self, x) -> None:
+        pass
+
+    def cmd_output_marking(self, is_start: bool) -> None:
         pass
 
     def request_capabilities(self, q) -> None:

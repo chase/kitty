@@ -214,16 +214,16 @@ def get_data():
         tf.extractall(tdir)
         with open(tdir + '/data.sh') as f:
             env_vars = f.read()
-            apply_env_vars(env_vars)
-            data_dir = os.environ.pop('KITTY_SSH_KITTEN_DATA_DIR')
-            if not os.path.isabs(data_dir):
-                data_dir = os.path.join(HOME, data_dir)
-            data_dir = os.path.abspath(data_dir)
-            shell_integration_dir = os.path.join(data_dir, 'shell-integration')
-            compile_terminfo(tdir + '/home')
-            move(tdir + '/home', HOME)
-            if os.path.exists(tdir + '/root'):
-                move(tdir + '/root', '/')
+        apply_env_vars(env_vars)
+        data_dir = os.environ.pop('KITTY_SSH_KITTEN_DATA_DIR')
+        if not os.path.isabs(data_dir):
+            data_dir = os.path.join(HOME, data_dir)
+        data_dir = os.path.abspath(data_dir)
+        shell_integration_dir = os.path.join(data_dir, 'shell-integration')
+        compile_terminfo(tdir + '/home')
+        move(tdir + '/home', HOME)
+        if os.path.exists(tdir + '/root'):
+            move(tdir + '/root', '/')
 
 
 def exec_zsh_with_integration():
@@ -295,7 +295,10 @@ def main():
     cwd = os.environ.pop('KITTY_LOGIN_CWD', '')
     install_kitty_bootstrap()
     if cwd:
-        os.chdir(cwd)
+        try:
+            os.chdir(cwd)
+        except Exception as err:
+            print(f'Failed to change working directory to: {cwd} with error: {err}', file=sys.stderr)
     ksi = frozenset(filter(None, os.environ.get('KITTY_SHELL_INTEGRATION', '').split()))
     exec_cmd = b'EXEC_CMD'
     if exec_cmd:

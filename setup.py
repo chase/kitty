@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import argparse
@@ -49,7 +49,7 @@ is_freebsd = 'freebsd' in _plat
 is_netbsd = 'netbsd' in _plat
 is_dragonflybsd = 'dragonfly' in _plat
 is_bsd = is_freebsd or is_netbsd or is_dragonflybsd or is_openbsd
-is_arm = platform.processor() == 'arm' or platform.machine() == 'arm64'
+is_arm = platform.processor() == 'arm' or platform.machine() in ('arm64', 'aarch64')
 Env = glfw.Env
 env = Env()
 PKGCONFIG = os.environ.get('PKGCONFIG_EXE', 'pkg-config')
@@ -145,6 +145,7 @@ class Options:
     prefix: str = './linux-package'
     dir_for_static_binaries: str = 'build/static'
     skip_code_generation: bool = False
+    skip_building_kitten: bool = False
     clean_for_cross_compile: bool = False
     python_compiler_flags: str = ''
     python_linker_flags: str = ''
@@ -447,11 +448,22 @@ def init_env(
     std = '' if is_openbsd else '-std=c11'
     sanitize_flag = ' '.join(sanitize_args)
     march = '-march=native' if native_optimizations else ''
+    # Using -mbranch-protection=standard causes crashes on Linux ARM, reported
+    # in https://github.com/kovidgoyal/kitty/issues/6845#issuecomment-1835886938
+    arm_control_flow_protection = '-mbranch-protection=standard' if is_macos else ''
+    # Universal build fails with -fcf-protection clang is not smart enough to filter it out for the ARM part
+    intel_control_flow_protection = '-fcf-protection=full' if ccver >= (9, 0) and not build_universal_binary else ''
+    control_flow_protection = arm_control_flow_protection if is_arm else intel_control_flow_protection
+    env_cflags = shlex.split(os.environ.get('CFLAGS', ''))
+    env_cppflags = shlex.split(os.environ.get('CPPFLAGS', ''))
+    env_ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
+    if control_flow_protection and not test_compile(cc, control_flow_protection, *env_cppflags, *env_cflags, ldflags=env_ldflags):
+        control_flow_protection = ''
     cflags_ = os.environ.get(
         'OVERRIDE_CFLAGS', (
             f'-Wextra {float_conversion} -Wno-missing-field-initializers -Wall -Wstrict-prototypes {std}'
             f' {werror} {optimize} {sanitize_flag} -fwrapv {stack_protector} {missing_braces}'
-            f' -pipe {march} -fvisibility=hidden {fortify_source}'
+            f' -pipe {march} -fvisibility=hidden {fortify_source} {control_flow_protection}'
         )
     )
     cflags = shlex.split(cflags_) + shlex.split(
@@ -463,9 +475,9 @@ def init_env(
     )
     ldflags = shlex.split(ldflags_)
     ldflags.append('-shared')
-    cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
-    cflags += shlex.split(os.environ.get('CFLAGS', ''))
-    ldflags += shlex.split(os.environ.get('LDFLAGS', ''))
+    cppflags += env_cppflags
+    cflags += env_cflags
+    ldflags += env_ldflags
     if not debug and not sanitize and not is_openbsd and link_time_optimization:
         # See https://github.com/google/sanitizers/issues/647
         cflags.append('-flto')
@@ -964,12 +976,15 @@ def build_static_kittens(
     go = shutil.which('go')
     if not go:
         raise SystemExit('The go tool was not found on this system. Install Go')
-    required_go_version = subprocess.check_output([go] + 'list -f {{.GoVersion}} -m'.split()).decode().strip()
+    required_go_version = subprocess.check_output([go] + 'list -f {{.GoVersion}} -m'.split(), env=dict(os.environ, GO111MODULE="on")).decode().strip()
     current_go_version = subprocess.check_output([go, 'version']).decode().strip().split()[2][2:]
     if parse_go_version(required_go_version) > parse_go_version(current_go_version):
         raise SystemExit(f'The version of go on this system ({current_go_version}) is too old. go >= {required_go_version} is needed')
     if not for_platform:
         update_go_generated_files(args, os.path.join(launcher_dir, appname))
+    if args.skip_building_kitten:
+        print('Skipping building of the kitten binary because of a command line option. Build is incomplete', file=sys.stderr)
+        return ''
     cmd = [go, 'build', '-v']
     vcs_rev = args.vcs_rev or get_vcs_rev()
     ld_flags: List[str] = []
@@ -1150,12 +1165,29 @@ def compile_python(base_path: str) -> None:
         invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH, ddir='')
 
 
-def create_linux_bundle_gunk(ddir: str, libdir_name: str) -> None:
+def create_linux_bundle_gunk(ddir: str, args: Options) -> None:
+    libdir_name = args.libdir_name
+    base = Path(ddir)
+    in_src_launcher = base / (f'{libdir_name}/kitty/kitty/launcher/kitty')
+    launcher = base / 'bin/kitty'
+    skip_docs = False
     if not os.path.exists('docs/_build/html'):
-        make = 'gmake' if is_freebsd else 'make'
-        run_tool([make, 'docs'])
-    copy_man_pages(ddir)
-    copy_html_docs(ddir)
+        kitten_exe = os.path.join(os.path.dirname(str(launcher)), 'kitten')
+        if os.path.exists(kitten_exe):
+            os.environ['KITTEN_EXE_FOR_DOCS'] = kitten_exe
+            make = 'gmake' if is_freebsd else 'make'
+            run_tool([make, 'docs'])
+        else:
+            if args.skip_building_kitten:
+                skip_docs = True
+                print('WARNING: You have chosen to skip building kitten.'
+                      ' This means docs could not be generated and will not be included in the linux package.'
+                      ' You should build kitten and then re-run this build.', file=sys.stderr)
+            else:
+                raise SystemExit(f'kitten binary not found at: {kitten_exe}')
+    if not skip_docs:
+        copy_man_pages(ddir)
+        copy_html_docs(ddir)
     for (icdir, ext) in {'256x256': 'png', 'scalable': 'svg'}.items():
         icdir = os.path.join(ddir, 'share', 'icons', 'hicolor', icdir, 'apps')
         safe_makedirs(icdir)
@@ -1195,9 +1227,6 @@ MimeType=image/*;application/x-sh;application/x-shellscript;inode/directory;text
 '''
             )
 
-    base = Path(ddir)
-    in_src_launcher = base / (f'{libdir_name}/kitty/kitty/launcher/kitty')
-    launcher = base / 'bin/kitty'
     if os.path.exists(in_src_launcher):
         os.remove(in_src_launcher)
     os.makedirs(os.path.dirname(in_src_launcher), exist_ok=True)
@@ -1455,6 +1484,8 @@ def create_macos_bundle_gunk(dest: str, for_freeze: bool, args: Options) -> str:
     create_macos_app_icon(os.path.join(ddir, 'Contents', 'Resources'))
     if not for_freeze:
         kitten_exe = build_static_kittens(args, launcher_dir=os.path.dirname(kitty_exe))
+        if not kitten_exe:
+            raise SystemExit('kitten not built cannot create macOS bundle')
         os.symlink(os.path.relpath(kitten_exe, os.path.dirname(in_src_launcher)),
                    os.path.join(os.path.dirname(in_src_launcher), os.path.basename(kitten_exe)))
     return str(kitty_exe)
@@ -1538,7 +1569,7 @@ def package(args: Options, bundle_type: str) -> None:
     if not for_freeze and not bundle_type.startswith('macos-'):
         build_static_kittens(args, launcher_dir=launcher_dir)
     if not is_macos:
-        create_linux_bundle_gunk(ddir, args.libdir_name)
+        create_linux_bundle_gunk(ddir, args)
 
     if bundle_type.startswith('macos-'):
         create_macos_bundle_gunk(ddir, for_freeze, args)
@@ -1652,6 +1683,12 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
         action='store_true',
         help='Do not create the *_generated.* source files. This is useful if they'
         ' have already been generated by a previous build, for example during a two-stage cross compilation.'
+    )
+    p.add_argument(
+        '--skip-building-kitten',
+        default=Options.skip_building_kitten,
+        action='store_true',
+        help='Do not build the kitten binary. Useful if you want to build it separately.'
     )
     p.add_argument(
         '--clean-for-cross-compile',

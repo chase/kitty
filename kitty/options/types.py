@@ -8,7 +8,10 @@ import kitty.constants
 from kitty.fast_data_types import Color, SingleKey
 import kitty.fast_data_types
 import kitty.fonts
-from kitty.options.utils import AliasMap, KeyDefinition, KeyMap, MouseMap, MouseMapping, SequenceMap, TabBarMarginHeight
+from kitty.options.utils import (
+    AliasMap, KeyDefinition, KeyboardModeMap, MouseMap, MouseMapping, NotifyOnCmdFinish,
+    TabBarMarginHeight
+)
 import kitty.options.utils
 from kitty.types import FloatEdges
 import kitty.types
@@ -386,6 +389,7 @@ option_names = (  # {{{
  'mouse_hide_wait',
  'mouse_map',
  'narrow_symbols',
+ 'notify_on_cmd_finish',
  'open_url_with',
  'paste_actions',
  'placement_strategy',
@@ -545,6 +549,7 @@ class Options:
     mark3_background: Color = Color(242, 116, 188)
     mark3_foreground: Color = Color(0, 0, 0)
     mouse_hide_wait: float = 0.0 if is_macos else 3.0
+    notify_on_cmd_finish: NotifyOnCmdFinish = NotifyOnCmdFinish(when='never', duration=5.0, action='notify', cmdline=())
     open_url_with: typing.List[str] = ['default']
     paste_actions: typing.FrozenSet[str] = frozenset({'confirm', 'quote-urls-at-prompt'})
     placement_strategy: choices_for_placement_strategy = 'center'
@@ -623,8 +628,7 @@ class Options:
     symbol_map: typing.Dict[typing.Tuple[int, int], str] = {}
     watcher: typing.Dict[str, str] = {}
     map: typing.List[kitty.options.utils.KeyDefinition] = []
-    keymap: KeyMap = {}
-    sequence_map: SequenceMap = {}
+    keyboard_modes: KeyboardModeMap = {}
     alias_map: AliasMap = AliasMap()
     mouse_map: typing.List[kitty.options.utils.MouseMapping] = []
     mousemap: MouseMap = {}
@@ -663,6 +667,7 @@ class Options:
         0xa8a8a8, 0xb2b2b2, 0xbcbcbc, 0xc6c6c6, 0xd0d0d0, 0xdadada, 0xe4e4e4, 0xeeeeee,
     ))
     config_paths: typing.Tuple[str, ...] = ()
+    all_config_paths: typing.Tuple[str, ...] = ()
     config_overrides: typing.Tuple[str, ...] = ()
 
     def __init__(self, options_dict: typing.Optional[typing.Dict[str, typing.Any]] = None) -> None:

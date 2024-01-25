@@ -460,7 +460,10 @@ When you specify a placement id, it will be added to the acknowledgement code
 above. Every placement is uniquely identified by the pair of the ``image id``
 and the ``placement id``. If you specify a placement id for an image that does
 not have an id (i.e. has id=0), it will be ignored. In particular this means
-there can exist multiple images with ``image id=0, placement id=0``.
+there can exist multiple images with ``image id=0, placement id=0``. Not
+specifying a placement id or using ``p=0`` for multiple put commands (``a=p``)
+with the same non-zero image id results in multiple placements the image.
+
 An example response::
 
     <ESC>_Gi=<image id>,p=<placement id>;OK<ESC>\
@@ -479,18 +482,22 @@ Controlling displayed image layout
 
 The image is rendered at the current cursor position, from the upper left corner of
 the current cell. You can also specify extra ``X=3`` and ``Y=4`` pixel offsets to display from
-a different origin within the cell. Note that the offsets must be smaller that the size of the cell.
+a different origin within the cell. Note that the offsets must be smaller than the size of the cell.
 
 By default, the entire image will be displayed (images wider than the available
 width will be truncated on the right edge). You can choose a source rectangle (in pixels)
 as the part of the image to display. This is done with the keys: ``x, y, w, h`` which specify
-the top-left corner, width and height of the source rectangle.
+the top-left corner, width and height of the source rectangle. The displayed
+area is the intersection of the specified rectangle with the source image
+rectangle.
 
 You can also ask the terminal emulator to display the image in a specified rectangle
 (num of columns / num of lines), using the control codes ``c,r``. ``c`` is the number of columns
 and `r` the number of rows. The image will be scaled (enlarged/shrunk) as needed to fit
 the specified area. Note that if you specify a start cell offset via the ``X,Y`` keys, it is not
-added to the number of rows/columns.
+added to the number of rows/columns. If only one of either ``r`` or ``c`` is
+specified, the other one is computed based on the source image aspect ratio, so
+that the image is displayed without distortion.
 
 Finally, you can specify the image *z-index*, i.e. the vertical stacking order. Images
 placed in the same location with different z-index values will be blended if
@@ -1024,7 +1031,6 @@ Key      Value                 Default    Description
 ``C``    Positive integer      ``0``      Cursor movement policy. ``0`` is the default, to move the cursor to after the image.
                                           ``1`` is to not move the cursor at all when placing the image.
 ``U``    Positive integer      ``0``      Set to ``1`` to create a virtual placement for a Unicode placeholder.
-                                          ``1`` is to not move the cursor at all when placing the image.
 ``z``    32-bit integer        ``0``      The *z-index* vertical stacking order of the image
 ``P``    Positive integer      ``0``      The id of a parent image for relative placement
 ``Q``    Positive integer      ``0``      The id of a placement in the parent image for relative placement

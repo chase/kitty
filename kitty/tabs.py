@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
@@ -58,7 +58,7 @@ from .layout.interface import create_layout_object_for, evict_cached_layouts
 from .tab_bar import TabBar, TabBarData
 from .types import ac
 from .typing import EdgeLiteral, SessionTab, SessionType, TypedDict
-from .utils import cmdline_for_hold, log_error, platform_window_id, resolved_shell
+from .utils import cmdline_for_hold, log_error, platform_window_id, resolved_shell, shlex_split, which
 from .window import CwdRequest, Watchers, Window, WindowDict
 from .window_list import WindowList
 
@@ -95,6 +95,7 @@ class SpecialWindowInstance(NamedTuple):
     env: Optional[Dict[str, str]]
     watchers: Optional[Watchers]
     overlay_behind: bool
+    hold: bool
 
 
 def SpecialWindow(
@@ -106,9 +107,10 @@ def SpecialWindow(
     overlay_for: Optional[int] = None,
     env: Optional[Dict[str, str]] = None,
     watchers: Optional[Watchers] = None,
-    overlay_behind: bool = False
+    overlay_behind: bool = False,
+    hold: bool = False,
 ) -> SpecialWindowInstance:
-    return SpecialWindowInstance(cmd, stdin, override_title, cwd_from, cwd, overlay_for, env, watchers, overlay_behind)
+    return SpecialWindowInstance(cmd, stdin, override_title, cwd_from, cwd, overlay_for, env, watchers, overlay_behind, hold)
 
 
 def add_active_id_to_history(items: Deque[int], item_id: int, maxlen: int = 64) -> None:
@@ -440,6 +442,7 @@ class Tab:  # {{{
         env: Optional[Dict[str, str]] = None,
         is_clone_launch: str = '',
         add_listen_on_env_var: bool = True,
+        hold: bool = False,
     ) -> Child:
         check_for_suitability = True
         if cmd is None:
@@ -455,7 +458,6 @@ class Tab:  # {{{
         if check_for_suitability:
             old_exe = cmd[0]
             if not os.path.isabs(old_exe):
-                from .utils import which
                 actual_exe = which(old_exe)
                 old_exe = actual_exe if actual_exe else os.path.abspath(old_exe)
             try:
@@ -472,14 +474,11 @@ class Tab:  # {{{
                         cwd = old_exe
                         cmd = resolved_shell(get_options())
                     elif not is_executable:
-                        import shlex
-
-                        from .utils import which
                         with suppress(OSError):
                             with open(old_exe) as f:
                                 if f.read(2) == '#!':
                                     line = f.read(4096).splitlines()[0]
-                                    cmd[:0] = shlex.split(line)
+                                    cmd[:0] = shlex_split(line)
                                 else:
                                     cmd[:0] = [resolved_shell(get_options())[0]]
                                 cmd[0] = which(cmd[0]) or cmd[0]
@@ -491,7 +490,7 @@ class Tab:  # {{{
         pwid = platform_window_id(self.os_window_id)
         if pwid is not None:
             fenv['WINDOWID'] = str(pwid)
-        ans = Child(cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch, add_listen_on_env_var=add_listen_on_env_var)
+        ans = Child(cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch, add_listen_on_env_var=add_listen_on_env_var, hold=hold)
         ans.fork()
         return ans
 
@@ -518,10 +517,12 @@ class Tab:  # {{{
         overlay_behind: bool = False,
         is_clone_launch: str = '',
         remote_control_passwords: Optional[Dict[str, Sequence[str]]] = None,
+        hold: bool = False,
     ) -> Window:
         child = self.launch_child(
             use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env,
-            is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True
+            is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
+            hold=hold,
         )
         window = Window(
             self, child, self.args, override_title=override_title,
@@ -551,7 +552,8 @@ class Tab:  # {{{
             override_title=special_window.override_title,
             cwd_from=special_window.cwd_from, cwd=special_window.cwd, overlay_for=special_window.overlay_for,
             env=special_window.env, location=location, copy_colors_from=copy_colors_from,
-            allow_remote_control=allow_remote_control, watchers=special_window.watchers, overlay_behind=special_window.overlay_behind
+            allow_remote_control=allow_remote_control, watchers=special_window.watchers, overlay_behind=special_window.overlay_behind,
+            hold=special_window.hold,
         )
 
     @ac('win', 'Close all windows in the tab other than the currently active window')

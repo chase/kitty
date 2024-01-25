@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import sys
@@ -39,9 +39,11 @@ for yesno and choices types.
 type=list
 dest=choices
 A choice for the choices type. Can be specified multiple times. Every choice has
-the syntax: ``letter[;color]:text``. Where :italic:`letter` is the accelerator key
-and :italic:`text` is the corresponding text. There can be an optional color
-specification after the letter to indicate what color it should be.
+the syntax: ``letter[;color]:text``, where :italic:`text` is the choice
+text and :italic:`letter` is the selection key. :italic:`letter` is a single letter
+belonging to :italic:`text`. This letter is highlighted within the choice text.
+There can be an optional color specification after the letter 
+to indicate what color it should be.
 For example: :code:`y:Yes` and :code:`n;red:No`
 
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import atexit
@@ -43,7 +43,7 @@ from .constants import (
     shell_path,
     ssh_control_master_template,
 )
-from .fast_data_types import WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_NORMAL, Color, get_options, open_tty
+from .fast_data_types import WINDOW_FULLSCREEN, WINDOW_MAXIMIZED, WINDOW_MINIMIZED, WINDOW_NORMAL, Color, Shlex, get_options, open_tty
 from .rgb import to_color
 from .types import run_once
 from .typing import AddressFamily, PopenType, Socket, StartupCtx
@@ -629,7 +629,7 @@ def get_hostname(fallback: str = '') -> str:
 
 def resolve_editor_cmd(editor: str, shell_env: Mapping[str, str]) -> Optional[str]:
     import shlex
-    editor_cmd = shlex.split(editor)
+    editor_cmd = list(shlex_split(editor))
     editor_exe = (editor_cmd or ('',))[0]
     if editor_exe and os.path.isabs(editor_exe):
         return editor
@@ -663,19 +663,17 @@ def get_editor_from_env(env: Mapping[str, str]) -> Optional[str]:
 
 
 def get_editor_from_env_vars(opts: Optional[Options] = None) -> List[str]:
-    import shlex
-
     editor = get_editor_from_env(os.environ)
     if not editor:
         shell_env = read_shell_environment(opts)
         editor = get_editor_from_env(shell_env)
 
     for ans in (editor, 'vim', 'nvim', 'vi', 'emacs', 'hx', 'kak', 'micro', 'nano', 'vis'):
-        if ans and which(shlex.split(ans)[0], only_system=True):
+        if ans and which(next(shlex_split(ans)), only_system=True):
             break
     else:
         ans = 'vim'
-    return shlex.split(ans)
+    return list(shlex_split(ans))
 
 
 def get_editor(opts: Optional[Options] = None, path_to_edit: str = '', line_number: int = 0) -> List[str]:
@@ -689,8 +687,7 @@ def get_editor(opts: Optional[Options] = None, path_to_edit: str = '', line_numb
     if opts.editor == '.':
         ans = get_editor_from_env_vars()
     else:
-        import shlex
-        ans = shlex.split(opts.editor)
+        ans = list(shlex_split(opts.editor))
     ans[0] = os.path.expanduser(ans[0])
     if path_to_edit:
         if line_number:
@@ -770,7 +767,6 @@ def resolved_shell(opts: Optional[Options] = None) -> List[str]:
     if q == '.':
         ans = [shell_path]
     else:
-        import shlex
         env = {}
         if opts is not None:
             env['TERM'] = opts.term
@@ -783,7 +779,7 @@ def resolved_shell(opts: Optional[Options] = None) -> List[str]:
             env['USER'] = pwd.getpwuid(os.geteuid()).pw_name
         def expand(x: str) -> str:
             return expandvars(x, env)
-        ans = list(map(expand, shlex.split(q)))
+        ans = list(map(expand, shlex_split(q)))
     return ans
 
 
@@ -1226,3 +1222,15 @@ def key_val_matcher(items: Iterable[Tuple[str, str]], key_pat: 're.Pattern[str]'
                 val_pat is None or val_pat.search(val) is not None):
             return True
     return False
+
+
+def shlex_split(text: str) -> Iterator[str]:
+    s = Shlex(text)
+    while (q := s.next_word())[0] > -1:
+        yield q[1]
+
+
+def shlex_split_with_positions(text: str) -> Iterator[Tuple[int, str]]:
+    s = Shlex(text)
+    while (q := s.next_word())[0] > -1:
+        yield q

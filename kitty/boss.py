@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import atexit
@@ -66,7 +66,6 @@ from .fast_data_types import (
     GLFW_MOD_SUPER,
     GLFW_MOUSE_BUTTON_LEFT,
     GLFW_PRESS,
-    GLFW_RELEASE,
     IMPERATIVE_CLOSE_REQUESTED,
     NO_CLOSE_REQUESTED,
     ChildMonitor,
@@ -92,9 +91,9 @@ from .fast_data_types import (
     get_options,
     get_os_window_size,
     global_font_size,
-    is_modifier_key,
     last_focused_os_window_id,
     mark_os_window_for_close,
+    os_window_focus_counters,
     os_window_font_size,
     patch_global_colors,
     redirect_mouse_handling,
@@ -105,7 +104,6 @@ from .fast_data_types import (
     set_application_quit_request,
     set_background_image,
     set_boss,
-    set_in_sequence_mode,
     set_options,
     set_os_window_chrome,
     set_os_window_size,
@@ -117,11 +115,11 @@ from .fast_data_types import (
     wrapped_kitten_names,
 )
 from .key_encoding import get_name_to_functional_number_map
-from .keys import get_shortcut, shortcut_matches
+from .keys import Mappings
 from .layout.base import set_layout_options
 from .notify import notification_activated
 from .options.types import Options
-from .options.utils import MINIMUM_FONT_SIZE, KeyMap, SubSequenceMap
+from .options.utils import MINIMUM_FONT_SIZE, KeyboardMode, KeyDefinition
 from .os_window_size import initial_window_size_func
 from .rgb import color_from_int
 from .session import Session, create_sessions, get_os_window_sizing_data
@@ -297,7 +295,7 @@ class VisualSelect:
         set_os_window_title(self.os_window_id, '')
         boss = get_boss()
         redirect_mouse_handling(False)
-        boss.clear_pending_sequences()
+        boss.mappings.clear_keyboard_modes()
         for wid in self.window_ids:
             w = boss.window_id_map.get(wid)
             if w is not None:
@@ -343,10 +341,7 @@ class Boss:
         self.startup_colors = {k: opts[k] for k in opts if isinstance(opts[k], Color)}
         self.current_visual_select: Optional[VisualSelect] = None
         self.startup_cursor_text_color = opts.cursor_text_color
-        self.pending_sequences: Optional[SubSequenceMap] = None
         # A list of events received so far that are potentially part of a sequence keybinding.
-        self.current_sequence: List[KeyEvent] = []
-        self.default_pending_action: str = ''
         self.cached_values = cached_values
         self.os_window_map: Dict[int, TabManager] = {}
         self.os_window_death_actions: Dict[int, Callable[[], None]] = {}
@@ -378,23 +373,10 @@ class Boss:
         set_boss(self)
         self.args = args
         self.mouse_handler: Optional[Callable[[WindowSystemMouseEvent], None]] = None
-        self.update_keymap(global_shortcuts)
+        self.mappings = Mappings(global_shortcuts)
         if is_macos:
             from .fast_data_types import cocoa_set_notification_activated_callback
             cocoa_set_notification_activated_callback(notification_activated)
-
-    def update_keymap(self, global_shortcuts:Optional[Dict[str, SingleKey]] = None) -> None:
-        if global_shortcuts is None:
-            if is_macos:
-                from .main import set_cocoa_global_shortcuts
-                global_shortcuts = set_cocoa_global_shortcuts(get_options())
-            else:
-                global_shortcuts = {}
-        self.global_shortcuts_map: KeyMap = {v: k for k, v in global_shortcuts.items()}
-        self.global_shortcuts = global_shortcuts
-        self.keymap = get_options().keymap.copy()
-        for sc in self.global_shortcuts.values():
-            self.keymap.pop(sc, None)
 
     def startup_first_child(self, os_window_id: Optional[int], startup_sessions: Iterable[Session] = ()) -> None:
         si = startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session)
@@ -1337,68 +1319,20 @@ class Boss:
         t = self.active_tab
         return None if t is None else t.active_window
 
-    def set_pending_sequences(self, sequences: SubSequenceMap, default_pending_action: str = '') -> None:
-        self.pending_sequences = sequences
-        self.default_pending_action = default_pending_action
-        set_in_sequence_mode(True)
+    @ac('misc', '''
+    End the current keyboard mode switching to the previous mode.
+    ''')
+    def pop_keyboard_mode(self) -> bool:
+        return self.mappings.pop_keyboard_mode()
+
+    @ac('misc', '''
+    Switch to the specified keyboard mode, pushing it onto the stack of keyboard modes.
+    ''')
+    def push_keyboard_mode(self, new_mode: str) -> None:
+        self.mappings.push_keyboard_mode(new_mode)
 
     def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
-        # Handles shortcuts, return True if the key was consumed
-        key_action = get_shortcut(self.keymap, ev)
-        if key_action is None:
-            sequences = get_shortcut(get_options().sequence_map, ev)
-            if sequences and not isinstance(sequences, str):
-                self.set_pending_sequences(sequences)
-                self.current_sequence = [ev]
-                return True
-            if self.global_shortcuts_map and get_shortcut(self.global_shortcuts_map, ev):
-                return True
-        elif isinstance(key_action, str):
-            return self.combine(key_action)
-        return False
-
-    def clear_pending_sequences(self) -> None:
-        self.pending_sequences = None
-        self.current_sequence = []
-        self.default_pending_action = ''
-        set_in_sequence_mode(False)
-
-    def process_sequence(self, ev: KeyEvent) -> bool:
-        # Process an event as part of a sequence. Returns whether the key
-        # is consumed as part of a kitty sequence keybinding.
-        if not self.pending_sequences:
-            set_in_sequence_mode(False)
-            return False
-
-        if self.current_sequence:
-            self.current_sequence.append(ev)
-        if ev.action == GLFW_RELEASE or is_modifier_key(ev.key):
-            return True
-        # For a press/repeat event that's not a modifier, try matching with
-        # kitty bindings:
-        remaining = {}
-        matched_action = None
-        for seq, key_action in self.pending_sequences.items():
-            if shortcut_matches(seq[0], ev):
-                seq = seq[1:]
-                if seq:
-                    remaining[seq] = key_action
-                else:
-                    matched_action = key_action
-
-        if remaining:
-            self.pending_sequences = remaining
-            return True
-        matched_action = matched_action or self.default_pending_action
-        if matched_action:
-            self.clear_pending_sequences()
-            self.combine(matched_action)
-            return True
-        w = self.active_window
-        if w is not None:
-            w.write_to_child(b''.join(w.encoded_key(ev) for ev in self.current_sequence))
-        self.clear_pending_sequences()
-        return False
+        return self.mappings.dispatch_possible_special_key(ev)
 
     def cancel_current_visual_select(self) -> None:
         if self.current_visual_select:
@@ -1425,27 +1359,27 @@ class Boss:
             focus_os_window(tab.os_window_id, True)
         self.current_visual_select = VisualSelect(tab.id, tab.os_window_id, initial_tab_id, initial_os_window_id, choose_msg, callback, reactivate_prev_tab)
         if tab.current_layout.only_active_window_visible:
-            w = self.select_window_in_tab_using_overlay(tab, choose_msg, only_window_ids)
-            self.current_visual_select.window_used_for_selection_id = 0 if w is None else w.id
+            self.select_window_in_tab_using_overlay(tab, choose_msg, only_window_ids)
             return
-        pending_sequences: SubSequenceMap = {}
+        km = KeyboardMode('__visual_select__')
+        km.on_action = 'end'
         fmap = get_name_to_functional_number_map()
         alphanumerics = get_options().visual_window_select_characters
         for idx, window in tab.windows.iter_windows_with_number(only_visible=True):
             if only_window_ids and window.id not in only_window_ids:
                 continue
-            ac = f'visual_window_select_action_trigger {window.id}'
+            ac = KeyDefinition(definition=f'visual_window_select_action_trigger {window.id}')
             if idx >= len(alphanumerics):
                 break
             ch = alphanumerics[idx]
             window.screen.set_window_char(ch)
             self.current_visual_select.window_ids.append(window.id)
             for mods in (0, GLFW_MOD_CONTROL, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT, GLFW_MOD_SUPER, GLFW_MOD_ALT, GLFW_MOD_SHIFT):
-                pending_sequences[(SingleKey(mods=mods, key=ord(ch.lower())),)] = ac
+                km.keymap[SingleKey(mods=mods, key=ord(ch.lower()))].append(ac)
                 if ch in string.digits:
-                    pending_sequences[(SingleKey(mods=mods, key=fmap[f'KP_{ch}']),)] = ac
+                    km.keymap[SingleKey(mods=mods, key=fmap[f'KP_{ch}'])].append(ac)
         if len(self.current_visual_select.window_ids) > 1:
-            self.set_pending_sequences(pending_sequences, default_pending_action='visual_window_select_action_trigger 0')
+            self.mappings._push_keyboard_mode(km)
             redirect_mouse_handling(True)
             self.mouse_handler = self.visual_window_select_mouse_handler
         else:
@@ -1480,11 +1414,16 @@ class Boss:
             self.mouse_handler(ev)
 
     def select_window_in_tab_using_overlay(self, tab: Tab, msg: str, only_window_ids: Container[int] = ()) -> Optional[Window]:
-        windows = tuple((None, f'Current window: {w.title}' if w is self.active_window else w.title)
-                        if only_window_ids and w.id not in only_window_ids else (w.id, w.title)
-                        for i, w in tab.windows.iter_windows_with_number(only_visible=False))
-        if len(windows) < 1:
-            self.visual_window_select_action_trigger(windows[0][0] if windows and windows[0][0] is not None else 0)
+        windows: List[Tuple[Optional[int], str]] = []
+        selectable_windows: List[Tuple[int, str]] = []
+        for i, w in tab.windows.iter_windows_with_number(only_visible=False):
+            if only_window_ids and w.id not in only_window_ids:
+                windows.append((None, f'Current window: {w.title}' if w is self.active_window else w.title))
+            else:
+                windows.append((w.id, w.title))
+                selectable_windows.append((w.id, w.title))
+        if len(selectable_windows) < 2:
+            self.visual_window_select_action_trigger(selectable_windows[0][0] if selectable_windows else 0)
             if get_options().enable_audio_bell:
                 ring_bell()
             return None
@@ -1562,7 +1501,8 @@ class Boss:
         def report_match(f: Callable[..., Any]) -> None:
             if self.args.debug_keyboard:
                 prefix = '\n' if dispatch_type == 'KeyPress' else ''
-                print(f'{prefix}\x1b[35m{dispatch_type}\x1b[m matched action:', func_name(f), flush=True)
+                end = ', ' if dispatch_type == 'KeyPress' else '\n'
+                print(f'{prefix}\x1b[35m{dispatch_type}\x1b[m matched action:', func_name(f), end=end, flush=True)
 
         if key_action is not None:
             f = getattr(self, key_action.func, None)
@@ -1609,8 +1549,6 @@ class Boss:
             try:
                 actions = get_options().alias_map.resolve_aliases(action_definition, 'map' if dispatch_type == 'KeyPress' else 'mouse_map')
             except Exception as e:
-                import traceback
-                traceback.print_exc()
                 self.show_error('Failed to parse action', f'{action_definition}\n{e}')
                 return True
             if actions:
@@ -1620,8 +1558,6 @@ class Boss:
                         if len(actions) > 1:
                             self.drain_actions(list(actions[1:]), window_for_dispatch, dispatch_type)
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
                     self.show_error('Key action failed', f'{actions[0].pretty()}\n{e}')
                     consumed = True
         return consumed
@@ -1662,11 +1598,40 @@ class Boss:
                         text = '\n'.join(urls)
                 w.paste_text(text)
 
-    @ac('win', 'Focus the nth OS window')
+    @ac('win', '''
+        Focus the nth OS window if positive or the previously active OS windows if negative. When the number is larger
+        than the number of OS windows focus the last OS window. A value of zero will refocus the currently focused OS window,
+        this is useful if focus is not on any kitty OS window at all, however, it will only work if the window manager
+        allows applications to grab focus. For example::
+
+            # focus the previously active kitty OS window
+            map ctrl+p nth_os_window -1
+            # focus the current kitty OS window (grab focus)
+            map ctrl+0 nth_os_window 0
+            # focus the first kitty OS window
+            map ctrl+1 nth_os_window 1
+            # focus the last kitty OS window
+            map ctrl+1 nth_os_window 999
+    ''')
     def nth_os_window(self, num: int = 1) -> None:
-        if self.os_window_map and num > 0:
-            ids = list(self.os_window_map.keys())
+        if not self.os_window_map:
+            return
+        if num == 0:
+            os_window_id = current_focused_os_window_id() or last_focused_os_window_id()
+            focus_os_window(os_window_id, True)
+        elif num > 0:
+            ids = tuple(self.os_window_map.keys())
             os_window_id = ids[min(num, len(ids)) - 1]
+            focus_os_window(os_window_id, True)
+        elif num < 0:
+            fc_map = os_window_focus_counters()
+            s = sorted(fc_map.keys(), key=fc_map.__getitem__)
+            if not s:
+                return
+            try:
+                os_window_id = s[num-1]
+            except IndexError:
+                os_window_id = s[0]
             focus_os_window(os_window_id, True)
 
     @ac('win', 'Close the currently active OS Window')
@@ -1780,7 +1745,11 @@ class Boss:
 
         cmd = list(map(prepare_arg, get_options().scrollback_pager))
         if not os.path.isabs(cmd[0]):
-            cmd[0] = which(cmd[0]) or cmd[0]
+            resolved_exe = which(cmd[0])
+            if not resolved_exe:
+                log_error(f'The scrollback_pager {cmd[0]} was not found in PATH, falling back to less')
+                resolved_exe = which('less') or 'less'
+            cmd[0] = resolved_exe
 
         if os.path.basename(cmd[0]) == 'less':
             cmd.append('-+F')  # reset --quit-if-one-screen
@@ -1966,6 +1935,7 @@ class Boss:
             overlay_for=overlay_for,
         )
 
+    @ac('misc', 'Show an error message with the specified title and text')
     def show_error(self, title: str, msg: str) -> None:
         tab = self.active_tab
         w = self.active_window
@@ -2544,7 +2514,7 @@ class Boss:
         if is_macos:
             from .fast_data_types import cocoa_clear_global_shortcuts
             cocoa_clear_global_shortcuts()
-        self.update_keymap()
+        self.mappings.update_keymap()
         if is_macos:
             from .fast_data_types import cocoa_recreate_global_menu
             cocoa_recreate_global_menu()
@@ -2574,7 +2544,7 @@ class Boss:
         from .cli import default_config_paths
         from .config import load_config
         old_opts = get_options()
-        prev_paths = old_opts.config_paths or default_config_paths(self.args.config)
+        prev_paths = old_opts.all_config_paths or default_config_paths(self.args.config)
         paths = paths or prev_paths
         bad_lines: List[BadLine] = []
         opts = load_config(*paths, overrides=old_opts.config_overrides if apply_overrides else None, accumulate_bad_lines=bad_lines)

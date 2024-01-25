@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import json
@@ -11,7 +11,7 @@ from .conf.utils import BadLine, parse_config_base
 from .conf.utils import load_config as _load_config
 from .constants import cache_dir, defconf
 from .options.types import Options, defaults, option_names
-from .options.utils import KeyDefinition, KeyMap, MouseMap, MouseMapping, SequenceMap, build_action_aliases
+from .options.utils import KeyboardMode, KeyboardModeMap, KeyDefinition, MouseMap, MouseMapping, build_action_aliases
 from .typing import TypedDict
 from .utils import log_error
 
@@ -100,28 +100,29 @@ def finalize_keys(opts: Options, accumulate_bad_lines: Optional[List[BadLine]] =
                 else:
                     accumulate_bad_lines.append(BadLine(d.definition_location.number, d.definition_location.line, err, d.definition_location.file))
 
-    keymap: KeyMap = {}
-    sequence_map: SequenceMap = {}
+    modes: KeyboardModeMap = {'': KeyboardMode()}
 
     for defn in defns:
-        is_no_op = defn.is_no_op
+        if defn.options.new_mode:
+            modes[defn.options.new_mode] = nm = KeyboardMode(defn.options.new_mode)
+            nm.on_unknown = defn.options.on_unknown
+            nm.on_action = defn.options.on_action
+            defn.definition = f'push_keyboard_mode {defn.options.new_mode}'
+        try:
+            m = modes[defn.options.mode]
+        except KeyError:
+            kerr = f'The keyboard mode {defn.options.mode} is unknown, ignoring the mapping'
+            if accumulate_bad_lines is None:
+                log_error(kerr)
+            else:
+                dl = defn.definition_location
+                accumulate_bad_lines.append(BadLine(dl.number, dl.line, KeyError(kerr), dl.file))
+            continue
+        items = m.keymap[defn.trigger]
         if defn.is_sequence:
-            keymap.pop(defn.trigger, None)
-            s = sequence_map.setdefault(defn.trigger, {})
-            if is_no_op:
-                s.pop(defn.rest, None)
-                if not s:
-                    del sequence_map[defn.trigger]
-            else:
-                s[defn.rest] = defn.definition
-        else:
-            sequence_map.pop(defn.trigger, None)
-            if is_no_op:
-                keymap.pop(defn.trigger, None)
-            else:
-                keymap[defn.trigger] = defn.definition
-    opts.keymap = keymap
-    opts.sequence_map = sequence_map
+            items = m.keymap[defn.trigger] = [kd for kd in items if defn.rest != kd.rest or defn.options.when_focus_on != kd.options.when_focus_on]
+        items.append(defn)
+    opts.keyboard_modes = modes
 
 
 def finalize_mouse_mappings(opts: Options, accumulate_bad_lines: Optional[List[BadLine]] = None) -> None:
@@ -140,11 +141,10 @@ def finalize_mouse_mappings(opts: Options, accumulate_bad_lines: Optional[List[B
     mousemap: MouseMap = {}
 
     for defn in defns:
-        is_no_op = defn.is_no_op
-        if is_no_op:
-            mousemap.pop(defn.trigger, None)
-        else:
+        if defn.definition:
             mousemap[defn.trigger] = defn.definition
+        else:
+            mousemap.pop(defn.trigger, None)
     opts.mousemap = mousemap
 
 
@@ -164,7 +164,8 @@ def load_config(*paths: str, overrides: Optional[Iterable[str]] = None, accumula
     from .options.parse import merge_result_dicts
 
     overrides = tuple(overrides) if overrides is not None else ()
-    opts_dict, paths = _load_config(defaults, partial(parse_config, accumulate_bad_lines=accumulate_bad_lines), merge_result_dicts, *paths, overrides=overrides)
+    opts_dict, found_paths = _load_config(
+        defaults, partial(parse_config, accumulate_bad_lines=accumulate_bad_lines), merge_result_dicts, *paths, overrides=overrides)
     opts = Options(opts_dict)
 
     opts.alias_map = build_action_aliases(opts.kitten_alias, 'kitten')
@@ -179,7 +180,8 @@ def load_config(*paths: str, overrides: Optional[Iterable[str]] = None, accumula
     if opts.background_opacity < 1.0 and opts.macos_titlebar_color > 0:
         log_error('Cannot use both macos_titlebar_color and background_opacity')
         opts.macos_titlebar_color = 0
-    opts.config_paths = paths
+    opts.config_paths = found_paths
+    opts.all_config_paths = paths
     opts.config_overrides = overrides
     return opts
 

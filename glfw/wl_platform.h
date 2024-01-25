@@ -60,6 +60,7 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 #include "wayland-primary-selection-unstable-v1-client-protocol.h"
 #include "wl_text_input.h"
 #include "wayland-xdg-activation-v1-client-protocol.h"
+#include "wayland-cursor-shape-v1-client-protocol.h"
 
 #define _glfw_dlopen(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
 #define _glfw_dlclose(handle) dlclose(handle)
@@ -286,13 +287,15 @@ typedef struct _GLFWlibraryWayland
     struct zwp_primary_selection_device_v1*    primarySelectionDevice;
     struct zwp_primary_selection_source_v1*    dataSourceForPrimarySelection;
     struct xdg_activation_v1* xdg_activation_v1;
+    struct wp_cursor_shape_manager_v1* wp_cursor_shape_manager_v1;
+    struct wp_cursor_shape_device_v1* wp_cursor_shape_device_v1;
 
     int                         compositorVersion;
     int                         seatVersion;
 
     struct wl_surface*          cursorSurface;
     GLFWCursorShape             cursorPreviousShape;
-    uint32_t                    serial, input_serial, pointer_serial, keyboard_enter_serial;
+    uint32_t                    serial, input_serial, pointer_serial, pointer_enter_serial, keyboard_enter_serial;
 
     int32_t                     keyboardRepeatRate;
     monotonic_t                 keyboardRepeatDelay;

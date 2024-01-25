@@ -5,8 +5,28 @@
 import enum
 import re
 import sys
+from collections import defaultdict
+from dataclasses import dataclass, fields
 from functools import lru_cache
-from typing import Any, Callable, Container, Dict, FrozenSet, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Container,
+    Dict,
+    FrozenSet,
+    Generic,
+    Iterable,
+    Iterator,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+    get_args,
+)
 
 import kitty.fast_data_types as defines
 from kitty.conf.utils import (
@@ -24,18 +44,16 @@ from kitty.conf.utils import (
     unit_float,
 )
 from kitty.constants import is_macos
-from kitty.fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE, Color, SingleKey
+from kitty.fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE, Color, Shlex, SingleKey
 from kitty.fonts import FontFeature, FontModification, ModificationType, ModificationUnit, ModificationValue
 from kitty.key_names import character_key_name_aliases, functional_key_name_aliases, get_key_name_lookup
 from kitty.rgb import color_as_int
 from kitty.types import FloatEdges, MouseEvent
-from kitty.utils import expandvars, log_error, resolve_abs_or_config_path
+from kitty.utils import expandvars, log_error, resolve_abs_or_config_path, shlex_split
 
-KeyMap = Dict[SingleKey, str]
+KeyMap = Dict[SingleKey, List['KeyDefinition']]
 MouseMap = Dict[MouseEvent, str]
 KeySequence = Tuple[SingleKey, ...]
-SubSequenceMap = Dict[KeySequence, str]
-SequenceMap = Dict[SingleKey, SubSequenceMap]
 MINIMUM_FONT_SIZE = 4
 default_tab_separator = ' ┇'
 mod_map = {'⌃': 'CONTROL', 'CTRL': 'CONTROL', '⇧': 'SHIFT', '⌥': 'ALT', 'OPTION': 'ALT', 'OPT': 'ALT',
@@ -65,7 +83,7 @@ class InvalidMods(ValueError):
 @func_with_args(
     'pass_selection_to_program', 'new_window', 'new_tab', 'new_os_window',
     'new_window_with_cwd', 'new_tab_with_cwd', 'new_os_window_with_cwd',
-    'launch', 'mouse_handle_click'
+    'launch', 'mouse_handle_click', 'show_error',
     )
 def shlex_parse(func: str, rest: str) -> FuncArgsType:
     return func, to_cmdline(rest)
@@ -87,6 +105,11 @@ def send_text_parse(func: str, rest: str) -> FuncArgsType:
         except Exception:
             log_error('Ignoring invalid send_text string: ' + args[1])
     return func, [mode, data]
+
+
+@func_with_args('send_key')
+def send_key(func: str, rest: str) -> FuncArgsType:
+    return func, rest.split()
 
 
 @func_with_args('run_kitten', 'run_simple_kitten', 'kitten')
@@ -141,7 +164,7 @@ def detach_tab_parse(func: str, rest: str) -> FuncArgsType:
     return func, (rest,)
 
 
-@func_with_args('set_background_opacity', 'goto_layout', 'toggle_layout', 'kitty_shell', 'show_kitty_doc', 'set_tab_title')
+@func_with_args('set_background_opacity', 'goto_layout', 'toggle_layout', 'kitty_shell', 'show_kitty_doc', 'set_tab_title', 'push_keyboard_mode')
 def simple_parse(func: str, rest: str) -> FuncArgsType:
     return func, [rest]
 
@@ -262,8 +285,7 @@ def move_window(func: str, rest: str) -> FuncArgsType:
 
 @func_with_args('pipe')
 def pipe(func: str, rest: str) -> FuncArgsType:
-    import shlex
-    r = shlex.split(rest)
+    r = list(shlex_split(rest))
     if len(r) < 3:
         log_error('Too few arguments to pipe function')
         r = ['none', 'none', 'true']
@@ -272,8 +294,7 @@ def pipe(func: str, rest: str) -> FuncArgsType:
 
 @func_with_args('set_colors')
 def set_colors(func: str, rest: str) -> FuncArgsType:
-    import shlex
-    r = shlex.split(rest)
+    r = list(shlex_split(rest))
     if len(r) < 1:
         log_error('Too few arguments to set_colors function')
     return func, r
@@ -366,12 +387,11 @@ def parse_marker_spec(ftype: str, parts: Sequence[str]) -> Tuple[str, Union[str,
 
 @func_with_args('toggle_marker')
 def toggle_marker(func: str, rest: str) -> FuncArgsType:
-    import shlex
     parts = rest.split(maxsplit=1)
     if len(parts) != 2:
         raise ValueError(f'{rest} is not a valid marker specification')
     ftype, spec = parts
-    parts = shlex.split(spec)
+    parts = list(shlex_split(spec))
     return func, list(parse_marker_spec(ftype, parts))
 
 
@@ -411,8 +431,7 @@ def mouse_selection(func: str, rest: str) -> FuncArgsType:
 
 @func_with_args('load_config_file')
 def load_config_file(func: str, rest: str) -> FuncArgsType:
-    import shlex
-    return func, shlex.split(rest)
+    return func, list(shlex_split(rest))
 # }}}
 
 
@@ -702,6 +721,35 @@ def active_tab_title_template(x: str) -> Optional[str]:
     return None if x == 'none' else x
 
 
+class NotifyOnCmdFinish(NamedTuple):
+    when: str
+    duration: float
+    action: str
+    cmdline: Tuple[str, ...]
+
+
+def notify_on_cmd_finish(x: str) -> NotifyOnCmdFinish:
+    parts = x.split(maxsplit=3)
+    if parts[0] not in ('never', 'unfocused', 'invisible', 'always'):
+        raise ValueError(f'Unknown notify_on_cmd_finish value: {parts[0]}')
+    when = parts[0]
+    duration = 5.0
+    if len(parts) > 1:
+        duration = float(parts[1])
+    action = 'notify'
+    cmdline: Tuple[str, ...] = ()
+    if len(parts) > 2:
+        if parts[2] not in ('notify', 'bell', 'command'):
+            raise ValueError(f'Unknown notify_on_cmd_finish action: {parts[2]}')
+        action = parts[2]
+        if action == 'command':
+            if len(parts) > 3:
+                cmdline = tuple(to_cmdline(parts[3]))
+            else:
+                raise ValueError('notify_on_cmd_finish `command` action needs a command line')
+    return NotifyOnCmdFinish(when, duration, action, cmdline)
+
+
 def config_or_absolute_path(x: str, env: Optional[Dict[str, str]] = None) -> Optional[str]:
     if not x or x.lower() == 'none':
         return None
@@ -911,11 +959,10 @@ def shell_integration(x: str) -> FrozenSet[str]:
 
 
 def paste_actions(x: str) -> FrozenSet[str]:
-    s = frozenset({'quote-urls-at-prompt', 'confirm', 'filter', 'confirm-if-large', 'replace-dangerous-control-codes', 'replace-newline'})
+    s = frozenset({'quote-urls-at-prompt', 'confirm', 'filter', 'confirm-if-large', 'replace-dangerous-control-codes', 'replace-newline', 'no-op'})
     q = frozenset(x.lower().split(','))
     if not q.issubset(s):
-        log_error(f'Invalid paste actions: {q - s}, ignoring')
-        return (q & s) or frozenset({'invalid'})
+        raise ValueError(f'Invalid paste actions: {q - s}, ignoring')
     return q
 
 
@@ -1056,12 +1103,10 @@ class BaseDefinition:
     definition_location: CurrentlyParsing
 
     def __init__(self, definition: str = '') -> None:
+        if definition in BaseDefinition.no_op_actions:
+            definition = ''
         self.definition = definition
         self.definition_location = currently_parsing.__copy__()
-
-    @property
-    def is_no_op(self) -> bool:
-        return self.definition in self.no_op_actions
 
     def pretty_repr(self, *fields: str) -> str:
         kwds = []
@@ -1107,38 +1152,147 @@ class MouseMapping(BaseDefinition):
         return MouseEvent(self.button, self.mods, self.repeat_count, self.grabbed)
 
 
+T = TypeVar('T')
+
+
+class LiteralField(Generic[T]):
+    def __init__(self, vals: Tuple[T, ...]):
+        self._vals = vals
+
+    def __set_name__(self, owner: object, name: str) -> None:
+        self._name = "_" + name
+
+    def __get__(self, obj: object, type: Optional[type] = None) -> T:
+        if obj is None:
+            return self._vals[0]
+        return getattr(obj, self._name, self._vals[0])
+
+    def __set__(self, obj: object, value: str) -> None:
+        if value not in self._vals:
+            raise KeyError(f'Invalid value for {self._name[1:]}: {value!r}')
+        object.__setattr__(obj, self._name, value)
+
+
+OnUnknown = Literal['beep', 'end', 'ignore', 'passthrough']
+OnAction = Literal['keep', 'end']
+
+
+@dataclass(init=False, frozen=True)
+class KeyMapOptions:
+    when_focus_on: str = ''
+    new_mode: str = ''
+    mode: str = ''
+    on_unknown: LiteralField[OnUnknown] = LiteralField[OnUnknown](get_args(OnUnknown))
+    on_action: LiteralField[OnAction] = LiteralField[OnAction](get_args(OnAction))
+
+
+default_key_map_options = KeyMapOptions()
+allowed_key_map_options = frozenset(f.name for f in fields(KeyMapOptions))
+
+
 class KeyDefinition(BaseDefinition):
 
     def __init__(
         self, is_sequence: bool = False, trigger: SingleKey = SingleKey(),
-            rest: Tuple[SingleKey, ...] = (), definition: str = ''
+        rest: Tuple[SingleKey, ...] = (), definition: str = '',
+        options: KeyMapOptions = default_key_map_options
     ):
         super().__init__(definition)
         self.is_sequence = is_sequence
         self.trigger = trigger
         self.rest = rest
+        self.options = options
+
+    @property
+    def is_suitable_for_global_shortcut(self) -> bool:
+        return not self.options.when_focus_on and not self.options.mode and not self.options.new_mode and not self.is_sequence
+
+    @property
+    def full_key_sequence_to_trigger(self) -> Tuple[SingleKey, ...]:
+        return (self.trigger,) + self.rest
+
+    @property
+    def unique_identity_within_keymap(self) -> Tuple[Tuple[SingleKey, ...], str]:
+        return self.full_key_sequence_to_trigger, self.options.when_focus_on
 
     def __repr__(self) -> str:
-        return self.pretty_repr('is_sequence', 'trigger', 'rest')
+        return self.pretty_repr('is_sequence', 'trigger', 'rest', 'options')
+
+    def human_repr(self) -> str:
+        ans = self.definition or 'no-op'
+        if self.options.when_focus_on:
+            ans = f'[--when-focus-on={self.options.when_focus_on}]{ans}'
+        return ans
+
+    def shift_sequence_and_copy(self) -> 'KeyDefinition':
+        return KeyDefinition(self.is_sequence, self.trigger, self.rest[1:], self.definition, self.options)
 
     def resolve_and_copy(self, kitty_mod: int) -> 'KeyDefinition':
         def r(k: SingleKey) -> SingleKey:
             return k.resolve_kitty_mod(kitty_mod)
         ans = KeyDefinition(
             self.is_sequence, r(self.trigger), tuple(map(r, self.rest)),
-            self.definition
+            self.definition, self.options
         )
         ans.definition_location = self.definition_location
         return ans
 
 
+class KeyboardMode:
+
+    on_unknown: OnUnknown = get_args(OnUnknown)[0]
+    on_action : OnAction = get_args(OnAction)[0]
+    sequence_keys: Optional[List[defines.KeyEvent]] = None
+
+    def __init__(self, name: str = '') -> None:
+        self.name = name
+        self.keymap: KeyMap = defaultdict(list)
+
+
+KeyboardModeMap = Dict[str, KeyboardMode]
+
+
+def parse_options_for_map(val: str) -> Tuple[KeyMapOptions, str]:
+    expecting_arg = ''
+    ans = KeyMapOptions()
+    s = Shlex(val)
+    while (tok := s.next_word())[0] > -1:
+        x = tok[1]
+        if expecting_arg:
+            object.__setattr__(ans, expecting_arg, x)
+            expecting_arg = ''
+        elif x.startswith('--'):
+            expecting_arg = x[2:]
+            k, sep, v = expecting_arg.partition('=')
+            k = k.replace('-', '_')
+            expecting_arg = k
+            if expecting_arg not in allowed_key_map_options:
+                raise KeyError(f'The map option {x} is unknown. Allowed options: {", ".join(allowed_key_map_options)}')
+            if sep == '=':
+                object.__setattr__(ans, k, v)
+                expecting_arg = ''
+        else:
+            return ans, val[tok[0]:]
+    return ans, ''
+
+
 def parse_map(val: str) -> Iterable[KeyDefinition]:
     parts = val.split(maxsplit=1)
-    if len(parts) != 2:
-        return
-    sc, action = parts
+    options = default_key_map_options
+    if len(parts) == 2:
+        sc, action = parts
+        if sc.startswith('--'):
+            options, leftover = parse_options_for_map(val)
+            parts = leftover.split(maxsplit=1)
+            if len(parts) == 1:
+                sc, action = parts[0], ''
+            else:
+                sc = parts[0]
+                action = ' '.join(parts[1:])
+    else:
+        sc, action = val, ''
     sc, action = sc.strip().strip(sequence_sep), action.strip()
-    if not sc or not action:
+    if not sc:
         return
     is_sequence = sequence_sep in sc
     if is_sequence:
@@ -1169,18 +1323,22 @@ def parse_map(val: str) -> Iterable[KeyDefinition]:
             return
     if is_sequence:
         if trigger is not None:
-            yield KeyDefinition(True, trigger, rest, definition=action)
+            yield KeyDefinition(True, trigger, rest, definition=action, options=options)
     else:
         assert key is not None
-        yield KeyDefinition(False, SingleKey(mods, is_native, key), definition=action)
+        yield KeyDefinition(False, SingleKey(mods, is_native, key), definition=action, options=options)
 
 
 def parse_mouse_map(val: str) -> Iterable[MouseMapping]:
     parts = val.split(maxsplit=3)
-    if len(parts) != 4:
+    if len(parts) == 4:
+        xbutton, event, modes, action = parts
+    elif len(parts) > 2:
+        xbutton, event, modes = parts
+        action = ''
+    else:
         log_error(f'Ignoring invalid mouse action: {val}')
         return
-    xbutton, event, modes, action = parts
     kparts = xbutton.split('+')
     if len(kparts) > 1:
         mparts, obutton = kparts[:-1], kparts[-1].lower()

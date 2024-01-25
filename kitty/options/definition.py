@@ -10,7 +10,7 @@ from kitty.constants import website_url
 
 definition = Definition(
     'kitty',
-    Action('map', 'parse_map', {'keymap': 'KeyMap', 'sequence_map': 'SequenceMap', 'alias_map': 'AliasMap'},
+    Action('map', 'parse_map', {'keyboard_modes': 'KeyboardModeMap', 'alias_map': 'AliasMap'},
            ['KeyDefinition', 'kitty.fast_data_types.SingleKey']),
     Action('mouse_map', 'parse_mouse_map', {'mousemap': 'MouseMap'}, ['MouseMapping']),
     has_color_table=True,
@@ -300,7 +300,9 @@ be rendered with a "reverse video" effect. It's color will be the color of the
 text in the cell it is over and the text will be rendered with the background
 color of the cell. Note that if the program running in the terminal sets a
 cursor color, this takes precedence. Also, the cursor colors are modified if
-the cell background and foreground colors have very low contrast.
+the cell background and foreground colors have very low contrast. Note that some
+themes set this value, so if you want to override it, place your value after
+the lines where the theme file is included.
 '''
     )
 
@@ -310,7 +312,8 @@ opt('cursor_text_color', '#111111',
 The color of text under the cursor. If you want it rendered with the
 background color of the cell underneath instead, use the special keyword:
 background. Note that if :opt:`cursor` is set to :code:`none` then this option
-is ignored.
+is ignored. Note that some themes set this value, so if you want to override it,
+place your value after the lines where the theme file is included.
 '''
     )
 
@@ -567,6 +570,8 @@ The supported paste actions are:
     Run the filter_paste() function from the file :file:`paste-actions.py` in
     the kitty config directory on the pasted text. The text returned by the
     function will be actually pasted.
+:code:`no-op`:
+    Has no effect.
 '''
     )
 
@@ -705,10 +710,10 @@ You can run kitty with the :option:`kitty --debug-input` command line option
 to see mouse events. See the builtin actions below to get a sense of what is
 possible.
 
-If you want to unmap an action, map it to :ac:`no_op`. For example, to disable
+If you want to unmap a button, map it to nothing. For example, to disable
 opening of URLs with a plain click::
 
-    mouse_map left click ungrabbed no_op
+    mouse_map left click ungrabbed
 
 See all the mappable actions including mouse actions :doc:`here </actions>`.
 
@@ -1148,15 +1153,16 @@ faded and one being fully opaque.
 opt('resize_debounce_time', '0.1 0.5',
     option_type='resize_debounce_time', ctype='!resize_debounce_time',
     long_text='''
-The time to wait before redrawing the screen during a live resize of the OS
-window, when no new resize events have been received, i.e. when resizing is
-either paused or finished. On platforms such as macOS, where the operating
-system sends events corresponding to the start and end of a live resize, the
-second number is used for redraw-after-pause since kitty can distinguish
-between a pause and end of resizing.  On such systems the first number is
-ignored and redraw is immediate after end of resize.  On other systems the
-first number is used so that kitty is "ready" quickly after the end of
-resizing, while not also continuously redrawing, to save energy.
+The time to wait (in seconds) before asking the program running in kitty to resize and
+redraw the screen during a live resize of the OS window, when no new resize
+events have been received, i.e. when resizing is either paused or finished.
+On platforms such as macOS, where the operating system sends events corresponding
+to the start and end of a live resize, the second number is used for
+redraw-after-pause since kitty can distinguish between a pause and end of
+resizing. On such systems the first number is ignored and redraw is immediate
+after end of resize. On other systems only the first number is used so that kitty
+is "ready" quickly after the end of resizing, while not also continuously
+redrawing, to save energy.
 '''
     )
 
@@ -3149,6 +3155,57 @@ first valid match, in the order specified, is sourced.
 '''
     )
 
+opt('notify_on_cmd_finish', 'never', option_type='notify_on_cmd_finish', long_text='''
+Show a desktop notification when a long-running command finishes
+(needs :opt:`shell_integration`).
+The possible values are:
+
+:code:`never`
+    Never send a notification.
+
+:code:`unfocused`
+    Only send a notification when the window does not have keyboard focus.
+
+:code:`invisible`
+    Only send a notification when the window both is unfocused and not visible
+    to the user, for example, because it is in an inactive tab or its OS window
+    is not currently active.
+
+:code:`always`
+    Always send a notification, regardless of window state.
+
+There are two optional arguments:
+
+First, the minimum duration for what is considered a
+long running command. The default is 5 seconds. Specify a second argument
+to set the duration. For example: :code:`invisible 15`.
+Do not set the value too small, otherwise a command that launches a new OS Window
+and exits will spam a notification.
+
+Second, the action to perform. The default is :code:`notify`. The possible values are:
+
+:code:`notify`
+    Send a desktop notification.
+
+:code:`bell`
+    Ring the terminal bell.
+
+:code:`command`
+    Run a custom command. All subsequent arguments are the cmdline to run.
+
+Some more examples::
+
+    # Send a notification when a command takes more than 5 seconds in an unfocused window
+    notify_on_cmd_finish unfocused
+    # Send a notification when a command takes more than 10 seconds in a invisible window
+    notify_on_cmd_finish invisible 10.0
+    # Ring a bell when a command takes more than 10 seconds in a invisible window
+    notify_on_cmd_finish invisible 10.0 bell
+    # Run 'notify-send' when a command takes more than 10 seconds in a invisible window
+    notify_on_cmd_finish invisible 10.0 command notify-send job finished
+'''
+    )
+
 opt('term', 'xterm-kitty',
     long_text='''
 The value of the :envvar:`TERM` environment variable to set. Changing this can
@@ -3343,59 +3400,19 @@ at :ref:`Functional key definitions <functional>`. For modifier keys, the names
 are :kbd:`ctrl` (:kbd:`control`, :kbd:`⌃`), :kbd:`shift` (:kbd:`⇧`), :kbd:`alt`
 (:kbd:`opt`, :kbd:`option`, :kbd:`⌥`), :kbd:`super` (:kbd:`cmd`, :kbd:`command`,
 :kbd:`⌘`).
-See also: :link:`GLFW mods <https://www.glfw.org/docs/latest/group__mods.html>`
 
-On Linux you can also use XKB key names to bind keys that are not supported by
-GLFW. See :link:`XKB keys
-<https://github.com/xkbcommon/libxkbcommon/blob/master/include/xkbcommon/xkbcommon-keysyms.h>`
-for a list of key names. The name to use is the part after the :code:`XKB_KEY_`
-prefix. Note that you can only use an XKB key name for keys that are not known
-as GLFW keys.
+Simple shortcut mapping is done with the :code:`map` directive. For full details
+on advanced mapping including modal and per application maps, see :doc:`mapping`.
+Some quick examples to illustrate common tasks::
 
-Finally, you can use raw system key codes to map keys, again only for keys that
-are not known as GLFW keys. To see the system key code for a key, start kitty
-with the :option:`kitty --debug-input` option, kitty will output some debug text
-for every key event. In that text look for :code:`native_code`, the value
-of that becomes the key name in the shortcut. For example:
-
-.. code-block:: none
-
-    on_key_input: glfw key: 0x61 native_code: 0x61 action: PRESS mods: none text: 'a'
-
-Here, the key name for the :kbd:`A` key is :code:`0x61` and you can use it with::
-
-    map ctrl+0x61 something
-
-to map :kbd:`Ctrl+A` to something.
-
-You can use the special action :ac:`no_op` to unmap a keyboard shortcut that is
-assigned in the default configuration::
-
-    map kitty_mod+space no_op
-
-If you would like kitty to completely ignore a key event, not even sending it to
-the program running in the terminal, map it to :ac:`discard_event`::
-
-    map kitty_mod+f1 discard_event
-
-You can combine multiple actions to be triggered by a single shortcut with
-:ac:`combine` action, using the syntax below::
-
-    map key combine <separator> action1 <separator> action2 <separator> action3 ...
-
-For example::
-
+    # unmap a keyboard shortcut, passing it to the program running in kitty
+    map kitty_mod+space
+    # completely ignore a keyboard event
+    map ctrl+alt+f1 discard_event
+    # combine multiple actions
     map kitty_mod+e combine : new_window : next_layout
-
-This will create a new window and switch to the next available layout.
-
-You can use multi-key shortcuts with the syntax shown below::
-
-    map key1>key2>key3 action
-
-For example::
-
-    map ctrl+f>2 set_font_size 20
+    # multi-key shortcuts
+    map ctrl+x>ctrl+y>z action
 
 The full list of actions that can be mapped to key presses is available
 :doc:`here </actions>`.
