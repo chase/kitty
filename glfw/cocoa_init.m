@@ -614,7 +614,8 @@ build_global_shortcuts_lookup(void) {
                 NSInteger ch = [parameters[0] isKindOfClass:[NSNumber class]] ? [parameters[0] integerValue] : 0xffff;
                 NSInteger vk = [parameters[1] isKindOfClass:[NSNumber class]] ? [parameters[1] integerValue] : 0xffff;
                 NSEventModifierFlags mods = ([parameters count] > 2 && [parameters[2] isKindOfClass:[NSNumber class]]) ? [parameters[2] unsignedIntegerValue] : 0;
-                mods = USEFUL_MODS(mods);
+                // differs slightly from USEFUL_MODS to include Globe/Function keys so that global shortcuts aren't interpreted as the modifier-less key
+                mods = mods & (NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagFunction);
                 static char buf[64];
 #define S(x, k) snprintf(buf, sizeof(buf) - 1, #x":%lx:%ld", (unsigned long)mods, (long)k)
                 if (ch == 0xffff) { if (vk == 0xffff) continue; S(v, vk); } else S(c, ch);
